@@ -341,6 +341,13 @@ def run_excel_to_tsv(pszInputExcelPath: str) -> None:
     ]
     if arrStep0013Paths:
         pszMessage += "\n\n一日平均出荷羽数の前年比付きstep0013 TSV:\n" + "\n".join(arrStep0013Paths)
+    arrNamedGroupDeductionSummaryExcelPaths: List[str] = [
+        line[len("年付きグループ別控除廃棄集計Excelファイル: ") :]
+        for line in pszStdOut.splitlines()
+        if line.startswith("年付きグループ別控除廃棄集計Excelファイル: ")
+    ]
+    if arrNamedGroupDeductionSummaryExcelPaths:
+        pszMessage += "\n\n年付きグループ別控除廃棄集計Excel:\n" + "\n".join(arrNamedGroupDeductionSummaryExcelPaths)
     arrNamedGroupSummaryExcelPaths: List[str] = [
         line[len("年付きグループ別集計Excelファイル: ") :]
         for line in pszStdOut.splitlines()
@@ -619,6 +626,9 @@ def draw_instruction_text(iWindowHandle: int) -> None:
         "step0011当年表に空行2行と前年の合計6行を加え、step0012グループ別年間TSVを出力します。\n"
         "前年欄は前年実績・前年の年表記とし、2022年は前年行を追加しません。\n"
         "step0017グループ別控除廃棄年間TSVを読み込み、同じファイル名のExcelを作成します。\n"
+        "作成したExcelを同じフォルダに〇グループ別集計_控除廃棄_YYYY年.xlsx名でもコピーします。\n"
+        "対象年は元Excelのファイル名から取得し、内容・書式を保持します。\n"
+        "同名時は_02などの連番を付け、元Excelは変更しません。\n"
         "各列の見出しとデータに合わせて列幅を自動調整します。\n"
         "step0012の当年・前年の稼動日数合計をO列に整数で出力します。\n"
         "step0012の24・25行目に一日平均出荷羽数の前年比を追加したstep0013を出力します。\n"

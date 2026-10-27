@@ -8579,6 +8579,39 @@ def create_group_summary_yearly_named_copies(arrExcelPaths: List[str]) -> List[s
         raise
 
 
+def create_group_deduction_summary_yearly_named_copies(arrExcelPaths: List[str]) -> List[str]:
+    """作成済み控除廃棄版グループ別年間Excelを対象年付きの別名でコピーします。"""
+    arrCreatedPaths: List[str] = []
+    try:
+        for pszExcelPath in arrExcelPaths:
+            objMatch = re.fullmatch(
+                r"(.+)_step0017_グループ別_控除廃棄_([0-9]{4})_年間(?:_[0-9]+)*\.xlsx",
+                os.path.basename(pszExcelPath),
+            )
+            if objMatch is None:
+                raise_conversion_error(
+                    "INVALID_GROUP_DEDUCTION_SUMMARY_NAMED_COPY_FILENAME", pszExcelPath
+                )
+            iYear = int(objMatch.group(2))
+            pszDirectory = os.path.dirname(pszExcelPath)
+            pszStem = f"〇グループ別集計_控除廃棄_{iYear:04d}年"
+            pszOutputPath = os.path.join(pszDirectory, pszStem + ".xlsx")
+            iSuffix = 2
+            while os.path.exists(pszOutputPath):
+                pszOutputPath = os.path.join(pszDirectory, f"{pszStem}_{iSuffix:02d}.xlsx")
+                iSuffix += 1
+            shutil.copy2(pszExcelPath, pszOutputPath)
+            arrCreatedPaths.append(pszOutputPath)
+        return arrCreatedPaths
+    except Exception:
+        for pszPath in arrCreatedPaths:
+            try:
+                os.remove(pszPath)
+            except OSError:
+                pass
+        raise
+
+
 def create_discard_summary_monthly_named_copies(
     arrExcelPaths: List[str],
 ) -> List[str]:
@@ -18188,6 +18221,9 @@ def main() -> int:
                 arrStep0017GroupDeductionPaths
             )
         )
+        arrNamedGroupDeductionSummaryExcelPaths = create_group_deduction_summary_yearly_named_copies(
+            arrStep0017GroupDeductionExcelPaths
+        )
         arrStep0005Paths, arrStep0005Years = create_step0005_files(
             pszOutputTsvPath, arrStep0004Paths, arrStep0004YearMonths
         )
@@ -18441,6 +18477,9 @@ def main() -> int:
     print("step0017グループ別控除廃棄年間Excelファイル数: " + str(len(arrStep0017GroupDeductionExcelPaths)))
     for pszPath in arrStep0017GroupDeductionExcelPaths:
         print("step0017グループ別控除廃棄年間Excelファイル: " + pszPath)
+    print("年付きグループ別控除廃棄集計Excelファイル数: " + str(len(arrNamedGroupDeductionSummaryExcelPaths)))
+    for pszPath in arrNamedGroupDeductionSummaryExcelPaths:
+        print("年付きグループ別控除廃棄集計Excelファイル: " + pszPath)
     print("step0016グループ別控除廃棄年間ファイル数: " + str(len(arrStep0016GroupDeductionPaths)))
     for pszPath in arrStep0016GroupDeductionPaths:
         print("step0016グループ別控除廃棄年間ファイル: " + pszPath)
