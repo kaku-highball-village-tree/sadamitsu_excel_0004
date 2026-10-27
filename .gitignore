@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.pyc
+
+# Excel
+*.xlsx
+*.xls
+*.xlsm
+
+# Excel temporary files
+~$*
