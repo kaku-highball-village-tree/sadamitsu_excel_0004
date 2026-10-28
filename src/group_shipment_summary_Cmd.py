@@ -8445,6 +8445,8 @@ def create_step0012_discard_summary_excel_files(
                             objCell.number_format = "0"
                         elif iColumnIndex == 2:
                             objCell.number_format = "00"
+                        elif iColumnIndex == 4 and pszUnit == "羽数":
+                            objCell.number_format = "0.00"
                         elif iColumnIndex == 3 or pszUnit == "羽数":
                             objCell.number_format = "#,##0"
                         elif pszUnit == "重量" or iColumnIndex in {4, 25}:
