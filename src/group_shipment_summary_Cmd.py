@@ -8579,6 +8579,39 @@ def create_group_summary_yearly_named_copies(arrExcelPaths: List[str]) -> List[s
         raise
 
 
+def create_variety_deduction_summary_yearly_named_copies(arrExcelPaths: List[str]) -> List[str]:
+    """作成済み控除廃棄版品種別年間Excelを対象年付きの別名でコピーします。"""
+    arrCreatedPaths: List[str] = []
+    try:
+        for pszExcelPath in arrExcelPaths:
+            objMatch = re.fullmatch(
+                r"(.+)_step0013_品種別_控除廃棄_([0-9]{4})_年間(?:_[0-9]+)*\.xlsx",
+                os.path.basename(pszExcelPath),
+            )
+            if objMatch is None:
+                raise_conversion_error(
+                    "INVALID_VARIETY_DEDUCTION_SUMMARY_NAMED_COPY_FILENAME", pszExcelPath
+                )
+            iYear = int(objMatch.group(2))
+            pszDirectory = os.path.dirname(pszExcelPath)
+            pszStem = f"〇品種別実績集計_控除廃棄_{iYear:04d}年"
+            pszOutputPath = os.path.join(pszDirectory, pszStem + ".xlsx")
+            iSuffix = 2
+            while os.path.exists(pszOutputPath):
+                pszOutputPath = os.path.join(pszDirectory, f"{pszStem}_{iSuffix:02d}.xlsx")
+                iSuffix += 1
+            shutil.copy2(pszExcelPath, pszOutputPath)
+            arrCreatedPaths.append(pszOutputPath)
+        return arrCreatedPaths
+    except Exception:
+        for pszPath in arrCreatedPaths:
+            try:
+                os.remove(pszPath)
+            except OSError:
+                pass
+        raise
+
+
 def create_group_deduction_summary_yearly_named_copies(arrExcelPaths: List[str]) -> List[str]:
     """作成済み控除廃棄版グループ別年間Excelを対象年付きの別名でコピーします。"""
     arrCreatedPaths: List[str] = []
@@ -18022,6 +18055,9 @@ def main() -> int:
         arrStep0013VarietyDeductionExcelPaths = create_step0013_variety_deduction_excel_files(
             arrStep0013VarietyDeductionPaths
         )
+        arrNamedVarietyDeductionSummaryExcelPaths = create_variety_deduction_summary_yearly_named_copies(
+            arrStep0013VarietyDeductionExcelPaths
+        )
         arrStep0003Paths, arrStep0003YearMonths = create_step0003_files(
             arrAggregatedTsvPaths, objLastYearMonth[0]
         )
@@ -18356,6 +18392,9 @@ def main() -> int:
     )
     for pszPath in arrStep0013VarietyDeductionExcelPaths:
         print("step0013品種別控除廃棄年間Excelファイル: " + pszPath)
+    print("年付き品種別控除廃棄実績集計Excelファイル数: " + str(len(arrNamedVarietyDeductionSummaryExcelPaths)))
+    for pszPath in arrNamedVarietyDeductionSummaryExcelPaths:
+        print("年付き品種別控除廃棄実績集計Excelファイル: " + pszPath)
     print("step0011品種別控除廃棄年間ファイル数: " + str(len(arrStep0011VarietyDeductionPaths)))
     for pszPath in arrStep0011VarietyDeductionPaths:
         print("step0011品種別控除廃棄年間ファイル: " + pszPath)
