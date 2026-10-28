@@ -8682,6 +8682,55 @@ def create_total_count_history_named_copies(arrExcelPaths: List[str]) -> List[st
         raise
 
 
+def apply_variety_deduction_summary_yearly_borders(pszExcelPath: str) -> None:
+    """見本と同じ48行の品種別控除廃棄表に罫線だけを設定します。"""
+    objWorkbook = load_workbook(pszExcelPath)
+    pszTemporaryPath = ""
+    try:
+        objWorksheet = objWorkbook["品種別"]
+        # 39行構成など、今回の見本と異なる表は変更しません。
+        if objWorksheet.max_row != 48:
+            return
+        objThin = Side(style="thin", color=Color(indexed=64))
+        objMedium = Side(style="medium", color=Color(indexed=64))
+        objDouble = Side(style="double", color=Color(indexed=64))
+        objEmpty = Side()
+        arrSeparatorRows = {2, 8, 14, 20, 26, 32, 39}
+        for iRow in range(1, 49):
+            for iColumn in range(1, 16):
+                objWorksheet.cell(iRow, iColumn).border = Border(
+                    left=objMedium if iColumn == 1 else objEmpty,
+                    right=(
+                        objMedium if iColumn == 15 else
+                        objDouble if iColumn == 2 else
+                        objThin if iColumn >= 3 else objEmpty
+                    ),
+                    top=(
+                        objMedium if iRow in {1, 42} else
+                        objThin if iRow - 1 in arrSeparatorRows else objEmpty
+                    ),
+                    bottom=(
+                        objMedium if iRow in {41, 48} else
+                        objThin if iRow in arrSeparatorRows else objEmpty
+                    ),
+                    diagonal=Side(),
+                )
+        iFileDescriptor, pszTemporaryPath = tempfile.mkstemp(
+            prefix="group_shipment_summary_variety_deduction_borders_",
+            suffix=".xlsx",
+            dir=os.path.dirname(os.path.abspath(pszExcelPath)),
+        )
+        os.close(iFileDescriptor)
+        objWorkbook.save(pszTemporaryPath)
+        objWorkbook.close()
+        os.replace(pszTemporaryPath, pszExcelPath)
+        pszTemporaryPath = ""
+    finally:
+        objWorkbook.close()
+        if pszTemporaryPath and os.path.exists(pszTemporaryPath):
+            os.remove(pszTemporaryPath)
+
+
 def create_variety_deduction_summary_yearly_named_copies(arrExcelPaths: List[str]) -> List[str]:
     """作成済み控除廃棄版品種別年間Excelを対象年付きの別名でコピーします。"""
     arrCreatedPaths: List[str] = []
@@ -8705,6 +8754,7 @@ def create_variety_deduction_summary_yearly_named_copies(arrExcelPaths: List[str
                 iSuffix += 1
             shutil.copy2(pszExcelPath, pszOutputPath)
             arrCreatedPaths.append(pszOutputPath)
+            apply_variety_deduction_summary_yearly_borders(pszOutputPath)
         return arrCreatedPaths
     except Exception:
         for pszPath in arrCreatedPaths:
