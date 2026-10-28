@@ -8615,6 +8615,40 @@ def create_variety_summary_yearly_named_copies(arrExcelPaths: List[str]) -> List
         raise
 
 
+def apply_total_count_history_borders(pszExcelPath: str) -> None:
+    """過去5年の羽数表15ブロックに罫線だけを設定し、上書き保存します。"""
+    objWorkbook = load_workbook(pszExcelPath)
+    pszTemporaryPath = ""
+    try:
+        objWorksheet = objWorkbook["総計羽数過去5年"]
+        objThin = Side(style="thin", color=Color(indexed=64))
+        objBorder = Border(
+            left=objThin, right=objThin, top=objThin, bottom=objThin,
+            diagonal=Side(),
+        )
+        for iStartRow in range(2, 115, 8):
+            for arrCells in objWorksheet.iter_rows(
+                min_row=iStartRow, max_row=iStartRow + 5,
+                min_col=1, max_col=13,
+            ):
+                for objCell in arrCells:
+                    objCell.border = objBorder
+        iFileDescriptor, pszTemporaryPath = tempfile.mkstemp(
+            prefix="group_shipment_summary_history_borders_",
+            suffix=".xlsx",
+            dir=os.path.dirname(os.path.abspath(pszExcelPath)),
+        )
+        os.close(iFileDescriptor)
+        objWorkbook.save(pszTemporaryPath)
+        objWorkbook.close()
+        os.replace(pszTemporaryPath, pszExcelPath)
+        pszTemporaryPath = ""
+    finally:
+        objWorkbook.close()
+        if pszTemporaryPath and os.path.exists(pszTemporaryPath):
+            os.remove(pszTemporaryPath)
+
+
 def create_total_count_history_named_copies(arrExcelPaths: List[str]) -> List[str]:
     """作成済み出荷廃棄羽数過去05年Excelを別名でコピーします。"""
     arrCreatedPaths: List[str] = []
@@ -8637,6 +8671,7 @@ def create_total_count_history_named_copies(arrExcelPaths: List[str]) -> List[st
                 iSuffix += 1
             shutil.copy2(pszExcelPath, pszOutputPath)
             arrCreatedPaths.append(pszOutputPath)
+            apply_total_count_history_borders(pszOutputPath)
         return arrCreatedPaths
     except Exception:
         for pszPath in arrCreatedPaths:
