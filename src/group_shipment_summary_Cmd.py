@@ -8579,6 +8579,38 @@ def create_group_summary_yearly_named_copies(arrExcelPaths: List[str]) -> List[s
         raise
 
 
+def create_total_count_history_named_copies(arrExcelPaths: List[str]) -> List[str]:
+    """作成済み出荷廃棄羽数過去05年Excelを別名でコピーします。"""
+    arrCreatedPaths: List[str] = []
+    try:
+        for pszExcelPath in arrExcelPaths:
+            objMatch = re.fullmatch(
+                r"(.+)_step0005_総計_出荷廃棄_羽数_過去05年(?:_[0-9]+)*\.xlsx",
+                os.path.basename(pszExcelPath),
+            )
+            if objMatch is None:
+                raise_conversion_error(
+                    "INVALID_TOTAL_COUNT_HISTORY_NAMED_COPY_FILENAME", pszExcelPath
+                )
+            pszDirectory = os.path.dirname(pszExcelPath)
+            pszStem = "〇出荷廃棄_羽数_過去05年"
+            pszOutputPath = os.path.join(pszDirectory, pszStem + ".xlsx")
+            iSuffix = 2
+            while os.path.exists(pszOutputPath):
+                pszOutputPath = os.path.join(pszDirectory, f"{pszStem}_{iSuffix:02d}.xlsx")
+                iSuffix += 1
+            shutil.copy2(pszExcelPath, pszOutputPath)
+            arrCreatedPaths.append(pszOutputPath)
+        return arrCreatedPaths
+    except Exception:
+        for pszPath in arrCreatedPaths:
+            try:
+                os.remove(pszPath)
+            except OSError:
+                pass
+        raise
+
+
 def create_variety_deduction_summary_yearly_named_copies(arrExcelPaths: List[str]) -> List[str]:
     """作成済み控除廃棄版品種別年間Excelを対象年付きの別名でコピーします。"""
     arrCreatedPaths: List[str] = []
@@ -18093,6 +18125,9 @@ def main() -> int:
                 arrStep0005TotalCountHistoryPaths
             )
         )
+        arrNamedTotalCountHistoryExcelPaths = create_total_count_history_named_copies(
+            arrStep0005TotalCountHistoryExcelPaths
+        )
         arrStep0004GroupDiscardCountPaths = create_step0004_group_discard_count_files(
             arrStep0003Paths, arrStep0003YearMonths
         )
@@ -18468,6 +18503,9 @@ def main() -> int:
     )
     for pszPath in arrStep0005TotalCountHistoryExcelPaths:
         print("step0005総計出荷廃棄羽数過去5年Excelファイル: " + pszPath)
+    print("出荷廃棄羽数過去5年集計Excelファイル数: " + str(len(arrNamedTotalCountHistoryExcelPaths)))
+    for pszPath in arrNamedTotalCountHistoryExcelPaths:
+        print("出荷廃棄羽数過去5年集計Excelファイル: " + pszPath)
     print(
         "step0004グループ別廃棄羽数ファイル数: "
         + str(len(arrStep0004GroupDiscardCountPaths))
