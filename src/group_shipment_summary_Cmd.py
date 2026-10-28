@@ -15,6 +15,7 @@ from typing import Any, Dict, List, NoReturn, Optional, Tuple
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.cell.cell import Cell
+from openpyxl.styles import Border, Color, Side
 from openpyxl.utils import get_column_letter
 
 
@@ -8712,6 +8713,52 @@ def create_group_deduction_summary_yearly_named_copies(arrExcelPaths: List[str])
         raise
 
 
+def apply_discard_summary_monthly_borders(pszExcelPath: str) -> None:
+    """年月付き一覧表の罫線だけを設定し、同じExcelへ上書き保存します。"""
+    objWorkbook = load_workbook(pszExcelPath)
+    pszTemporaryPath = ""
+    try:
+        objWorksheet = objWorkbook["総計"]
+        iLastRow = objWorksheet.max_row
+        objThin = Side(style="thin", color=Color(indexed=64))
+        objMedium = Side(style="medium", color=Color(indexed=64))
+        objEmpty = Side()
+        for iRow in range(1, iLastRow + 1):
+            for iColumn in range(1, 27):
+                objWorksheet.cell(iRow, iColumn).border = Border(
+                    left=(
+                        objMedium if iColumn == 1 else
+                        objThin if iColumn in {3, 5, 9, 24, 25} else objEmpty
+                    ),
+                    right=(
+                        objMedium if iColumn == 26 else
+                        objThin if iColumn in {4, 8, 23, 24, 25} else objEmpty
+                    ),
+                    top=(
+                        objMedium if iRow == 1 else
+                        objThin if iRow >= 3 and iRow % 2 == 1 else objEmpty
+                    ),
+                    bottom=(
+                        objMedium if iRow == iLastRow else
+                        objThin if iRow % 2 == 0 else objEmpty
+                    ),
+                )
+        iFileDescriptor, pszTemporaryPath = tempfile.mkstemp(
+            prefix="group_shipment_summary_discard_borders_",
+            suffix=".xlsx",
+            dir=os.path.dirname(os.path.abspath(pszExcelPath)),
+        )
+        os.close(iFileDescriptor)
+        objWorkbook.save(pszTemporaryPath)
+        objWorkbook.close()
+        os.replace(pszTemporaryPath, pszExcelPath)
+        pszTemporaryPath = ""
+    finally:
+        objWorkbook.close()
+        if pszTemporaryPath and os.path.exists(pszTemporaryPath):
+            os.remove(pszTemporaryPath)
+
+
 def create_discard_summary_monthly_named_copies(
     arrExcelPaths: List[str],
 ) -> List[str]:
@@ -8753,6 +8800,7 @@ def create_discard_summary_monthly_named_copies(
                 iSuffix += 1
             shutil.copy2(pszExcelPath, pszOutputPath)
             arrCreatedPaths.append(pszOutputPath)
+            apply_discard_summary_monthly_borders(pszOutputPath)
         return arrCreatedPaths
     except Exception:
         for pszPath in arrCreatedPaths:
