@@ -362,6 +362,13 @@ def run_excel_to_tsv(pszInputExcelPath: str) -> None:
     ]
     if arrNamedGroupSummaryExcelPaths:
         pszMessage += "\n\n年付きグループ別集計Excel:\n" + "\n".join(arrNamedGroupSummaryExcelPaths)
+    arrNamedTotalCountHistoryExcelPaths: List[str] = [
+        line[len("出荷廃棄羽数過去5年集計Excelファイル: ") :]
+        for line in pszStdOut.splitlines()
+        if line.startswith("出荷廃棄羽数過去5年集計Excelファイル: ")
+    ]
+    if arrNamedTotalCountHistoryExcelPaths:
+        pszMessage += "\n\n出荷廃棄羽数過去5年集計Excel:\n" + "\n".join(arrNamedTotalCountHistoryExcelPaths)
     if pszWarningFilePath:
         pszMessage += "\n\n警告ファイル:\n" + pszWarningFilePath
     show_completion_dialog(os.path.dirname(pszOutputTsvPath), bool(pszWarningFilePath), pszMessage)
@@ -568,6 +575,8 @@ def draw_instruction_text(iWindowHandle: int) -> None:
         "step0005総計出荷廃棄羽数過去05年TSVも出力します。\n"
         "step0005総計出荷廃棄羽数過去05年TSVを読み込んだ\n"
         "同名のExcelファイルも出力します。\n"
+        "作成したExcelを同じフォルダに〇出荷廃棄_羽数_過去05年.xlsx名でもコピーします。\n"
+        "内容・書式を保持し、同名時は_02などの連番を付け、元Excelは変更しません。\n"
         "総計の廃棄羽数・重量各15項目を横結合し、\n"
         "各グループの廃棄羽数・廃棄重量各15項目を横結合したTSVも出力します。\n"
         "各グループの廃棄羽数15項目に小計列を追加した\n"
