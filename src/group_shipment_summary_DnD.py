@@ -285,6 +285,13 @@ def run_excel_to_tsv(pszInputExcelPath: str) -> None:
     ]
     if arrStep0013VarietyExcelPaths:
         pszMessage += "\n\nstep0013 品種別年間Excel:\n" + "\n".join(arrStep0013VarietyExcelPaths)
+    arrNamedVarietySummaryExcelPaths: List[str] = [
+        line[len("年付き品種別実績集計Excelファイル: ") :]
+        for line in pszStdOut.splitlines()
+        if line.startswith("年付き品種別実績集計Excelファイル: ")
+    ]
+    if arrNamedVarietySummaryExcelPaths:
+        pszMessage += "\n\n年付き品種別実績集計Excel:\n" + "\n".join(arrNamedVarietySummaryExcelPaths)
     arrStep0011VarietyDeductionPaths: List[str] = [
         line[len("step0011品種別控除廃棄年間ファイル: ") :]
         for line in pszStdOut.splitlines()
@@ -491,6 +498,9 @@ def draw_instruction_text(iWindowHandle: int) -> None:
         "step0013品種別年間TSVを読み込み、品種別シートの年間Excelを\n"
         "品種ごと・年ごとに出力します。\n"
         "step0013品種別Excelの各列幅を自動調整します。\n"
+        "作成したExcelを同じフォルダに〇品種別実績集計_YYYY年.xlsx名でもコピーします。\n"
+        "対象年は元Excelのファイル名から取得し、内容・書式を保持します。\n"
+        "同名時は_02などの連番を付け、元Excelは変更しません。\n"
         "通常年48行・2022年39行に対応し、稼動日数・前年実績・前年比を反映します。\n"
         "前年比は倍率を小数点以下4桁で表示し、通常版step0010年間Excelは作成しません。\n"
         "品種別step0011当年表に空行2行と前年の合計6項目・稼動日数の7行を追加し、\n"

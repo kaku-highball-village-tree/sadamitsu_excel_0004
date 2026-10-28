@@ -8579,6 +8579,39 @@ def create_group_summary_yearly_named_copies(arrExcelPaths: List[str]) -> List[s
         raise
 
 
+def create_variety_summary_yearly_named_copies(arrExcelPaths: List[str]) -> List[str]:
+    """作成済み品種別年間Excelを対象年付きの別名でコピーします。"""
+    arrCreatedPaths: List[str] = []
+    try:
+        for pszExcelPath in arrExcelPaths:
+            objMatch = re.fullmatch(
+                r"(.+)_step0013_品種別_([0-9]{4})_年間(?:_[0-9]+)*\.xlsx",
+                os.path.basename(pszExcelPath),
+            )
+            if objMatch is None:
+                raise_conversion_error(
+                    "INVALID_VARIETY_SUMMARY_NAMED_COPY_FILENAME", pszExcelPath
+                )
+            iYear = int(objMatch.group(2))
+            pszDirectory = os.path.dirname(pszExcelPath)
+            pszStem = f"〇品種別実績集計_{iYear:04d}年"
+            pszOutputPath = os.path.join(pszDirectory, pszStem + ".xlsx")
+            iSuffix = 2
+            while os.path.exists(pszOutputPath):
+                pszOutputPath = os.path.join(pszDirectory, f"{pszStem}_{iSuffix:02d}.xlsx")
+                iSuffix += 1
+            shutil.copy2(pszExcelPath, pszOutputPath)
+            arrCreatedPaths.append(pszOutputPath)
+        return arrCreatedPaths
+    except Exception:
+        for pszPath in arrCreatedPaths:
+            try:
+                os.remove(pszPath)
+            except OSError:
+                pass
+        raise
+
+
 def create_total_count_history_named_copies(arrExcelPaths: List[str]) -> List[str]:
     """作成済み出荷廃棄羽数過去05年Excelを別名でコピーします。"""
     arrCreatedPaths: List[str] = []
@@ -18025,6 +18058,9 @@ def main() -> int:
         arrStep0013VarietyExcelPaths = create_step0013_variety_excel_files(
             arrStep0013VarietyPaths
         )
+        arrNamedVarietySummaryExcelPaths = create_variety_summary_yearly_named_copies(
+            arrStep0013VarietyExcelPaths
+        )
         (
             arrStep0004VarietyDeductionPaths,
             arrStep0004VarietyDeductionYearMonths,
@@ -18441,6 +18477,9 @@ def main() -> int:
         print("step0013品種別控除廃棄年間ファイル: " + pszPath)
     for pszPath in arrStep0013VarietyExcelPaths:
         print("step0013品種別年間Excelファイル: " + pszPath)
+    print("年付き品種別実績集計Excelファイル数: " + str(len(arrNamedVarietySummaryExcelPaths)))
+    for pszPath in arrNamedVarietySummaryExcelPaths:
+        print("年付き品種別実績集計Excelファイル: " + pszPath)
     print("step0011品種別年間ファイル数: " + str(len(arrStep0011VarietyPaths)))
     for pszPath in arrStep0011VarietyPaths:
         print("step0011品種別年間ファイル: " + pszPath)
