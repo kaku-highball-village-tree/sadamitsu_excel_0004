@@ -8605,6 +8605,7 @@ def create_variety_summary_yearly_named_copies(arrExcelPaths: List[str]) -> List
                 iSuffix += 1
             shutil.copy2(pszExcelPath, pszOutputPath)
             arrCreatedPaths.append(pszOutputPath)
+            apply_variety_deduction_summary_yearly_borders(pszOutputPath)
         return arrCreatedPaths
     except Exception:
         for pszPath in arrCreatedPaths:
