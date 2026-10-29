@@ -8549,6 +8549,51 @@ def create_step0012_discard_summary_excel_files(
         raise
 
 
+def apply_group_summary_yearly_borders(pszExcelPath: str) -> None:
+    """見本と同じ31行のグループ別表に罫線だけを設定し、上書き保存します。"""
+    objWorkbook = load_workbook(pszExcelPath)
+    pszTemporaryPath = ""
+    try:
+        objWorksheet = objWorkbook["グループ別"]
+        if objWorksheet.max_row != 31:
+            return
+        objThin = Side(style="thin", color=Color(indexed=64))
+        objMedium = Side(style="medium", color=Color(indexed=64))
+        objEmpty = Side()
+        for iRow in range(1, 32):
+            for iColumn in range(1, 16):
+                objWorksheet.cell(iRow, iColumn).border = Border(
+                    left=(
+                        objMedium if iColumn == 1 else
+                        objThin if iColumn >= 3 else objEmpty
+                    ),
+                    right=objMedium if iColumn == 15 else objEmpty,
+                    top=(
+                        objMedium if iRow == 1 else
+                        objThin if iRow in {3, 8, 13, 18, 24, 26} else objEmpty
+                    ),
+                    bottom=(
+                        objMedium if iRow == 31 else
+                        objThin if iRow in {2, 7, 12, 23, 25} else objEmpty
+                    ),
+                    diagonal=Side(),
+                )
+        iFileDescriptor, pszTemporaryPath = tempfile.mkstemp(
+            prefix="group_shipment_summary_group_borders_",
+            suffix=".xlsx",
+            dir=os.path.dirname(os.path.abspath(pszExcelPath)),
+        )
+        os.close(iFileDescriptor)
+        objWorkbook.save(pszTemporaryPath)
+        objWorkbook.close()
+        os.replace(pszTemporaryPath, pszExcelPath)
+        pszTemporaryPath = ""
+    finally:
+        objWorkbook.close()
+        if pszTemporaryPath and os.path.exists(pszTemporaryPath):
+            os.remove(pszTemporaryPath)
+
+
 def create_group_summary_yearly_named_copies(arrExcelPaths: List[str]) -> List[str]:
     """作成済みグループ別年間Excelを対象年付きの別名でコピーします。"""
     arrCreatedPaths: List[str] = []
@@ -8572,6 +8617,7 @@ def create_group_summary_yearly_named_copies(arrExcelPaths: List[str]) -> List[s
                 iSuffix += 1
             shutil.copy2(pszExcelPath, pszOutputPath)
             arrCreatedPaths.append(pszOutputPath)
+            apply_group_summary_yearly_borders(pszOutputPath)
         return arrCreatedPaths
     except Exception:
         for pszPath in arrCreatedPaths:
