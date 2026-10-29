@@ -6834,6 +6834,7 @@ def create_step0014_group_deduction_rows(
     arrStep0013Rows: List[List[str]],
 ) -> List[List[str]]:
     arrOutputRows = [arrRow.copy() + [""] for arrRow in arrStep0013Rows]
+    arrOutputRows[1][14] = "合計"
     dicAnnualValues: Dict[str, Dict[str, Decimal]] = {}
     for iGroupIndex, (_, pszGroupName) in enumerate(GROUPS):
         iFirstRow = 2 + iGroupIndex * 5
@@ -16609,10 +16610,11 @@ def read_step0014_for_excel(pszInputPath: str) -> List[List[str]]:
                 + ", Line = "
                 + str(iRowIndex + 1),
             )
-    if arrRows[0][14].strip(" \u3000\t") or arrRows[1][14].strip(" \u3000\t"):
+    if arrRows[0][14] != "" or arrRows[1][14] != "合計":
         raise_conversion_error(
             "INVALID_STEP0014_EXCEL_ANNUAL_HEADER",
-            "step0014 annual value column headers must be blank. Path = "
+            "O1は空欄、O2は「合計」である必要があります。"
+            "旧形式のTSVはstep0014から再作成してください。Path = "
             + pszInputPath,
         )
     for iMonthIndex in range(12):
@@ -16760,10 +16762,11 @@ def read_step0017_group_deduction_for_excel(
                 "unexpected step0017 row structure. Path = " + pszInputPath
                 + ", Line = " + str(i + 1),
             )
-    if arrRows[0][14].strip() or arrRows[1][14].strip():
+    if arrRows[0][14] != "" or arrRows[1][14] != "合計":
         raise_conversion_error(
             "INVALID_STEP0017_EXCEL_ANNUAL_HEADER",
-            "step0017 annual headers must be blank. Path = " + pszInputPath,
+            "O1は空欄、O2は「合計」である必要があります。"
+            "旧形式のTSVはstep0014から再作成してください。Path = " + pszInputPath,
         )
     for month_index in range(12):
         col = month_index + 2
@@ -17614,6 +17617,16 @@ def create_step0016_group_deduction_files(arrStep0015Paths: List[str]) -> List[s
             with open(pszInputPath, "rb") as objFile:
                 objCurrent = objFile.read()
             objOutput = objCurrent
+            arrCurrentRows = [
+                line.split("\t") for line in objCurrent.decode("utf-8-sig").splitlines()
+            ]
+            if (len(arrCurrentRows) < 2
+                    or any(len(row) != 15 for row in arrCurrentRows[:2])
+                    or arrCurrentRows[0][14] != "" or arrCurrentRows[1][14] != "合計"):
+                raise ValueError(
+                    "O1は空欄、O2は「合計」である必要があります。"
+                    "旧形式のTSVはstep0014から再作成してください。Path = " + pszInputPath
+                )
             if iYear != 2022:
                 pszPreviousPath = dicInputs.get(
                     (pszDirectory, pszPrefix, iYear - 1),
@@ -17621,9 +17634,7 @@ def create_step0016_group_deduction_files(arrStep0015Paths: List[str]) -> List[s
                 )
                 with open(pszPreviousPath, "rb") as objFile:
                     objPrevious = objFile.read()
-                arrCurrentLines = objCurrent.decode("utf-8-sig").splitlines()
                 arrPreviousLines = objPrevious.decode("utf-8-sig").splitlines()
-                arrCurrentRows = [line.split("\t") for line in arrCurrentLines]
                 arrPreviousRows = [line.split("\t") for line in arrPreviousLines]
                 for pszPath, arrRows, iExpectedYear in (
                     (pszInputPath, arrCurrentRows, iYear),
@@ -17633,9 +17644,10 @@ def create_step0016_group_deduction_files(arrStep0015Paths: List[str]) -> List[s
                             or any(len(row) != 15 for row in arrRows)
                             or arrRows[0] != ["", "年"] + [str(iExpectedYear)] * 12 + [""]
                             or arrRows[1][:2] != ["", "月"]
-                            or arrRows[1][14] != ""):
+                            or arrRows[1][14] != "合計"):
                         raise ValueError(
-                            "年間表の列数・年月見出しが不正です（15列、O1・O2は空欄）。Path = "
+                            "年間表の列数・年月見出しが不正です（15列、O1は空欄、O2は「合計」）。"
+                            "旧形式のTSVはstep0014から再作成してください。Path = "
                             + pszPath
                         )
                     arrMonths = [
@@ -17721,16 +17733,22 @@ def create_step0017_group_deduction_files(arrStep0016Paths: List[str]) -> List[s
             with open(pszInputPath, "rb") as objFile:
                 objInput = objFile.read()
             objOutput = objInput
+            arrRows = [line.split("\t") for line in objInput.decode("utf-8-sig").splitlines()]
+            if (len(arrRows) < 2 or any(len(row) != 15 for row in arrRows[:2])
+                    or arrRows[0][14] != "" or arrRows[1][14] != "合計"):
+                raise ValueError(
+                    "O1は空欄、O2は「合計」である必要があります。"
+                    "旧形式のTSVはstep0014から再作成してください。Path = " + pszInputPath
+                )
             if iYear != 2022:
                 arrLines = objInput.splitlines(keepends=True)
-                arrRows = [line.split("\t") for line in objInput.decode("utf-8-sig").splitlines()]
                 if (len(arrRows) != 31
                         or any(len(row) != 15 for i, row in enumerate(arrRows) if i not in (23, 24))):
                     raise ValueError("step0016は31行で、空行以外は15列である必要があります。")
                 if any(value for i in (23, 24) for value in arrRows[i]):
                     raise ValueError("24・25行目は空行である必要があります。")
                 if (arrRows[0] != ["", "年"] + [str(iYear)] * 12 + [""]
-                        or arrRows[1][:2] != ["", "月"] or arrRows[1][14] != ""
+                        or arrRows[1][:2] != ["", "月"] or arrRows[1][14] != "合計"
                         or any(re.fullmatch(r"[0-9]+", v) is None for v in arrRows[1][2:14])
                         or [int(v) for v in arrRows[1][2:14]] != list(range(1, 13))):
                     raise ValueError("step0016の年月見出しが不正です。")

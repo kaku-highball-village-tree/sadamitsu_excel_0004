@@ -618,6 +618,8 @@ def draw_instruction_text(iWindowHandle: int) -> None:
         "step0013グループ別控除廃棄年間TSVからExcelは作成しません。\n"
         "step0013の月別値から年次合計を計算し、\n"
         "平均体重・育成率も年間値から計算したstep0014グループ別控除廃棄年間TSVを出力します。\n"
+        "全対象年のstep0014でO1は空欄、O2は「合計」とし、後続TSV・最終Excelへ引き継ぎます。\n"
+        "O2が空欄の旧形式TSVはエラーとし、step0014からの再作成を案内します。\n"
         "step0014グループ別控除廃棄年間Excelは作成しません。\n"
         "step0014年間TSVとstep0001日別稼動判定TSVから稼動日数行を追加した\n"
         "step0015グループ別控除廃棄年間TSVを出力します。\n"
