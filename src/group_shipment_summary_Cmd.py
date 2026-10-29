@@ -5354,12 +5354,87 @@ def create_step0008_group_discard_deduction_output_path(
     return pszOutputPath
 
 
+def read_group_pre_shackling_counts(
+    pszPath: str, pszItemName: str, iYear: int, iMonth: int
+) -> Dict[str, str]:
+    """グループ別step0003から懸鳥前羽数を検証して読み込みます。"""
+    with open(pszPath, "r", encoding="utf-8-sig", newline="") as objFile:
+        arrRows = [strip_line_ending(line).split("\t") for line in objFile]
+    if not arrRows or arrRows[0] != [
+        "年", "月", "ｸﾞﾙｰﾌﾟ№", "ｸﾞﾙｰﾌﾟ名", pszItemName
+    ]:
+        raise_conversion_error(
+            "INVALID_PRE_SHACKLING_HEADER",
+            "invalid header. Item = " + pszItemName + "; Path = " + pszPath,
+        )
+    dicNumbers = {name: number for number, name in GROUPS}
+    dicValues: Dict[str, str] = {}
+    for iLine, arrFields in enumerate(arrRows[1:], start=2):
+        pszContext = (
+            f"Year/month = {iYear:04d}/{iMonth:02d}; Item = {pszItemName}; "
+            f"Line = {iLine}; Path = {pszPath}"
+        )
+        if len(arrFields) != 5:
+            raise_conversion_error("INVALID_PRE_SHACKLING_COLUMNS", pszContext)
+        pszGroup = arrFields[3].strip(" \u3000\t")
+        pszContext += "; Group = " + pszGroup
+        if (parse_year_month(arrFields[0], arrFields[1], iLine) != (iYear, iMonth)
+                or pszGroup not in dicNumbers
+                or arrFields[2].strip() != dicNumbers[pszGroup]):
+            raise_conversion_error("INVALID_PRE_SHACKLING_KEY", pszContext)
+        if pszGroup in dicValues:
+            raise_conversion_error("DUPLICATE_PRE_SHACKLING_GROUP", pszContext)
+        try:
+            objValue = parse_decimal_value(
+                arrFields[4].replace(",", ""), iLine, 4, pszItemName
+            )
+            if objValue is None:
+                raise ValueError("count was blank")
+        except (ConversionError, ValueError) as objException:
+            raise_conversion_error(
+                "INVALID_PRE_SHACKLING_VALUE", pszContext + "; " + str(objException)
+            )
+        dicValues[pszGroup] = arrFields[4]
+    for pszGroup in dicNumbers:
+        if pszGroup not in dicValues:
+            raise_conversion_error(
+                "MISSING_PRE_SHACKLING_GROUP",
+                f"Year/month = {iYear:04d}/{iMonth:02d}; Group = {pszGroup}; "
+                f"Item = {pszItemName}; Path = {pszPath}",
+            )
+    return dicValues
+
+
 def create_step0008_group_discard_deduction_files(
     arrStep0004GroupPaths: List[str],
     arrStep0007GroupTotalDiscardCountPaths: List[str],
     arrStep0007GroupTotalDiscardWeightPaths: List[str],
+    arrStep0003GroupPaths: List[str],
 ) -> List[str]:
-    """step0004グループ行へstep0007の全廃棄羽数・重量を追加します。"""
+    """全廃棄羽数・重量と、グループ別step0003の懸鳥前羽数を追加します。"""
+    arrPreItems = ["懸鳥前死鶏羽数", "懸鳥前発育不良羽数"]
+    dicPreCounts: Dict[Tuple[str, str, int, int, str], Dict[str, str]] = {}
+    for pszPath in arrStep0003GroupPaths:
+        objMatch = re.fullmatch(
+            r"(.+)_step0003_グループ別_(懸鳥前死鶏羽数|懸鳥前発育不良羽数)_"
+            r"(\d{4})_(\d{2})(?:_\d+)*\.tsv", os.path.basename(pszPath)
+        )
+        if objMatch is None:
+            continue
+        pszBase, pszItem, pszYear, pszMonth = objMatch.groups()
+        iYear, iMonth = parse_year_month(pszYear, pszMonth, 1)
+        objPreKey = (
+            os.path.dirname(os.path.abspath(pszPath)), pszBase, iYear, iMonth, pszItem
+        )
+        if objPreKey in dicPreCounts:
+            raise_conversion_error(
+                "DUPLICATE_PRE_SHACKLING_INPUT",
+                "duplicate group pre-shackling input. Key = " + str(objPreKey)
+                + "; Path = " + pszPath,
+            )
+        dicPreCounts[objPreKey] = read_group_pre_shackling_counts(
+            pszPath, pszItem, iYear, iMonth
+        )
     dicStep0004Groups: Dict[
         Tuple[str, str, int, int], Dict[str, Tuple[str, List[str]]]
     ] = {}
@@ -5429,6 +5504,17 @@ def create_step0008_group_discard_deduction_files(
 
     arrCreatedPaths: List[str] = []
     arrExpectedGroups = [pszName for _, pszName in GROUPS]
+    for objKey in dicStep0004Groups:
+        for pszItem in arrPreItems:
+            if (*objKey, pszItem) not in dicPreCounts:
+                pszExpectedPath = os.path.join(
+                    objKey[0], f"{objKey[1]}_step0003_グループ別_{pszItem}_"
+                    f"{objKey[2]:04d}_{objKey[3]:02d}.tsv"
+                )
+                raise_conversion_error(
+                    "MISSING_PRE_SHACKLING_INPUT",
+                    "missing input for 契約・直営・フリー. Path = " + pszExpectedPath,
+                )
     try:
         for objKey in sorted(dicStep0004Groups):
             dicGroups = dicStep0004Groups[objKey]
@@ -5458,11 +5544,13 @@ def create_step0008_group_discard_deduction_files(
                     arrStep0004Fields[6],
                     arrWeightFields[4],
                     arrStep0004Fields[7],
+                    *[dicPreCounts[(*objKey, pszItem)][pszGroupName]
+                      for pszItem in arrPreItems],
                 ]
                 arrOutputRows = [[
                     "年", "月", "ｸﾞﾙｰﾌﾟ№", "ｸﾞﾙｰﾌﾟ名", "入雛羽数",
                     "出荷羽数", "全廃棄羽数", "出荷重量", "全廃棄重量",
-                    "平均体重",
+                    "平均体重", *arrPreItems,
                 ], arrOutputFields]
                 pszOutputPath = (
                     create_step0008_group_discard_deduction_output_path(
@@ -5516,6 +5604,7 @@ def read_step0008_group_discard_row(
     arrExpectedHeader = [
         "年", "月", "ｸﾞﾙｰﾌﾟ№", "ｸﾞﾙｰﾌﾟ名", "入雛羽数", "出荷羽数",
         "全廃棄羽数", "出荷重量", "全廃棄重量", "平均体重",
+        "懸鳥前死鶏羽数", "懸鳥前発育不良羽数",
     ]
     try:
         with open(pszInputPath, "r", encoding="utf-8", newline="") as objFile:
@@ -5532,13 +5621,13 @@ def read_step0008_group_discard_row(
         raise_conversion_error(
             "INVALID_STEP0008_GROUP_DISCARD_ROWS",
             "step0008 group discard TSV must contain the expected header and "
-            "one data row. Path = " + pszInputPath,
+            "one data row. 旧形式の10列TSVはstep0008から再作成してください。Path = " + pszInputPath,
         )
     arrFields = arrRows[1]
     if len(arrFields) != len(arrExpectedHeader):
         raise_conversion_error(
             "INVALID_STEP0008_GROUP_DISCARD_COLUMNS",
-            "step0008 group discard row has an unexpected column count. Path = "
+            "step0008 must contain 12 columns. step0008から再作成してください。Path = "
             + pszInputPath,
         )
     try:
@@ -5562,6 +5651,16 @@ def read_step0008_group_discard_row(
             "step0008 row keys did not match the file name. Path = "
             + pszInputPath,
         )
+    for iColumn, pszItem in [(10, "懸鳥前死鶏羽数"), (11, "懸鳥前発育不良羽数")]:
+        try:
+            parse_step0008_group_discard_numeric_value(arrFields[iColumn], pszItem, pszInputPath)
+        except ConversionError as objException:
+            raise_conversion_error(
+                "INVALID_STEP0008_PRE_SHACKLING_VALUE",
+                f"Year/month = {iExpectedYear:04d}/{iExpectedMonth:02d}; "
+                f"Group = {pszExpectedGroupName}; Item = {pszItem}; "
+                f"Path = {pszInputPath}; Detail = {objException}",
+            )
     return arrFields
 
 
@@ -5611,6 +5710,12 @@ def create_step0009_group_discard_row(
         )
         - parse_step0008_group_discard_numeric_value(
             arrInputFields[6], "全廃棄羽数", pszInputPath
+        )
+        - parse_step0008_group_discard_numeric_value(
+            arrInputFields[10], "懸鳥前死鶏羽数", pszInputPath
+        )
+        - parse_step0008_group_discard_numeric_value(
+            arrInputFields[11], "懸鳥前発育不良羽数", pszInputPath
         )
     )
     objProcessedWeight = (
@@ -18484,6 +18589,7 @@ def main() -> int:
                 arrStep0004Paths,
                 arrStep0007GroupTotalDiscardCountPaths,
                 arrStep0007GroupTotalDiscardWeightPaths,
+                arrStep0003Paths,
             )
         )
         arrStep0009GroupDiscardPaths = create_step0009_group_discard_files(
