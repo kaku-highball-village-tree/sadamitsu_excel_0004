@@ -8549,7 +8549,9 @@ def create_step0012_discard_summary_excel_files(
         raise
 
 
-def apply_group_summary_yearly_borders(pszExcelPath: str) -> None:
+def apply_group_summary_yearly_borders(
+    pszExcelPath: str, bDeduction: bool = False
+) -> None:
     """見本と同じ31行のグループ別表に罫線だけを設定し、上書き保存します。"""
     objWorkbook = load_workbook(pszExcelPath)
     pszTemporaryPath = ""
@@ -8574,7 +8576,8 @@ def apply_group_summary_yearly_borders(pszExcelPath: str) -> None:
                     ),
                     bottom=(
                         objMedium if iRow == 31 else
-                        objThin if iRow in {2, 7, 12, 23, 25} else objEmpty
+                        objThin if iRow in {2, 7, 12, 23, 25}
+                        or (bDeduction and iRow == 17) else objEmpty
                     ),
                     diagonal=Side(),
                 )
@@ -8835,6 +8838,7 @@ def create_group_deduction_summary_yearly_named_copies(arrExcelPaths: List[str])
                 iSuffix += 1
             shutil.copy2(pszExcelPath, pszOutputPath)
             arrCreatedPaths.append(pszOutputPath)
+            apply_group_summary_yearly_borders(pszOutputPath, bDeduction=True)
         return arrCreatedPaths
     except Exception:
         for pszPath in arrCreatedPaths:
