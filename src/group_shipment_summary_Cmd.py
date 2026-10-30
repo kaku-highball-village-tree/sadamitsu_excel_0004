@@ -10,7 +10,7 @@ import sys
 import tempfile
 import unicodedata
 from datetime import date, datetime, time, timedelta
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP
 from typing import Any, Dict, List, NoReturn, Optional, Tuple
 
 from openpyxl import Workbook, load_workbook
@@ -5357,7 +5357,7 @@ def create_step0008_group_discard_deduction_output_path(
 def read_group_pre_shackling_counts(
     pszPath: str, pszItemName: str, iYear: int, iMonth: int
 ) -> Dict[str, str]:
-    """グループ別step0003から懸鳥前羽数を検証して読み込みます。"""
+    """グループ別step0003から懸鳥前羽数・重量を検証して読み込みます。"""
     with open(pszPath, "r", encoding="utf-8-sig", newline="") as objFile:
         arrRows = [strip_line_ending(line).split("\t") for line in objFile]
     if not arrRows or arrRows[0] != [
@@ -5389,7 +5389,7 @@ def read_group_pre_shackling_counts(
                 arrFields[4].replace(",", ""), iLine, 4, pszItemName
             )
             if objValue is None:
-                raise ValueError("count was blank")
+                raise ValueError("value was blank")
         except (ConversionError, ValueError) as objException:
             raise_conversion_error(
                 "INVALID_PRE_SHACKLING_VALUE", pszContext + "; " + str(objException)
@@ -5405,18 +5405,76 @@ def read_group_pre_shackling_counts(
     return dicValues
 
 
+def read_group_converted_discard_weights(
+    pszPath: str, iYear: int, iMonth: int
+) -> Dict[str, Decimal]:
+    """明細ごとに自主廃棄重量を0.72換算・切り捨てし、グループ別に合計します。"""
+    dicNumbers = {name: number for number, name in GROUPS}
+    dicTotals = {name: Decimal("0") for _, name in GROUPS}
+    setSeenGroups = set()
+    arrWeightItems = STEP0004_TOTAL_WEIGHT_ITEMS + ["予備３重量", "予備４重量"]
+    pszContext = f"Year/month = {iYear:04d}/{iMonth:02d}; Path = {pszPath}"
+    with open(pszPath, "r", encoding="utf-8-sig", newline="") as objFile:
+        objReader = csv.reader(objFile, delimiter="\t")
+        arrHeader = next(objReader, [])
+        if (len(arrHeader) != 64
+                or [arrHeader[i] for i in (0, 1, 10, 11)]
+                != ["年", "月", "ｸﾞﾙｰﾌﾟ№", "ｸﾞﾙｰﾌﾟ名"]
+                or arrHeader[47:64] != arrWeightItems):
+            raise_conversion_error("INVALID_CONVERTED_DISCARD_HEADER", pszContext)
+        for iLine, arrFields in enumerate(objReader, start=2):
+            pszRowContext = pszContext + f"; Line = {iLine}"
+            if len(arrFields) != 64:
+                raise_conversion_error("INVALID_CONVERTED_DISCARD_COLUMNS", pszRowContext)
+            pszGroup = arrFields[11].strip(" \u3000\t")
+            pszRowContext += "; Group = " + pszGroup
+            try:
+                if (parse_year_month(arrFields[0], arrFields[1], iLine) != (iYear, iMonth)
+                        or pszGroup not in dicNumbers
+                        or arrFields[10].strip() != dicNumbers[pszGroup]):
+                    raise ValueError("year/month or group did not match")
+                objSubtotal = Decimal("0")
+                for iColumn, pszItem in enumerate(arrWeightItems, start=47):
+                    objValue = parse_decimal_value(
+                        arrFields[iColumn].replace(",", ""), iLine, iColumn, pszItem
+                    )
+                    if objValue is None:
+                        raise ValueError("blank weight. Item = " + pszItem)
+                    objSubtotal += objValue
+            except (ConversionError, ValueError) as objException:
+                raise_conversion_error(
+                    "INVALID_CONVERTED_DISCARD_ROW",
+                    pszRowContext + "; Detail = " + str(objException),
+                )
+            dicTotals[pszGroup] += (objSubtotal / Decimal("0.72")).quantize(
+                Decimal("0.1"), rounding=ROUND_DOWN
+            )
+            setSeenGroups.add(pszGroup)
+    for pszGroup in dicNumbers:
+        if pszGroup not in setSeenGroups:
+            raise_conversion_error(
+                "MISSING_CONVERTED_DISCARD_GROUP", pszContext + "; Group = " + pszGroup
+            )
+    return dicTotals
+
+
 def create_step0008_group_discard_deduction_files(
     arrStep0004GroupPaths: List[str],
     arrStep0007GroupTotalDiscardCountPaths: List[str],
     arrStep0007GroupTotalDiscardWeightPaths: List[str],
     arrStep0003GroupPaths: List[str],
+    arrStep0001Paths: List[str],
 ) -> List[str]:
-    """全廃棄羽数・重量と、グループ別step0003の懸鳥前羽数を追加します。"""
-    arrPreItems = ["懸鳥前死鶏羽数", "懸鳥前発育不良羽数"]
+    """既存データへ懸鳥前羽数・重量と明細から換算した自主廃棄重量を追加します。"""
+    arrPreItems = [
+        "懸鳥前死鶏羽数", "懸鳥前発育不良羽数",
+        "懸鳥前死鶏重量", "懸鳥前発育不良重量",
+    ]
     dicPreCounts: Dict[Tuple[str, str, int, int, str], Dict[str, str]] = {}
     for pszPath in arrStep0003GroupPaths:
         objMatch = re.fullmatch(
-            r"(.+)_step0003_グループ別_(懸鳥前死鶏羽数|懸鳥前発育不良羽数)_"
+            r"(.+)_step0003_グループ別_(懸鳥前死鶏羽数|懸鳥前発育不良羽数|"
+            r"懸鳥前死鶏重量|懸鳥前発育不良重量)_"
             r"(\d{4})_(\d{2})(?:_\d+)*\.tsv", os.path.basename(pszPath)
         )
         if objMatch is None:
@@ -5504,6 +5562,25 @@ def create_step0008_group_discard_deduction_files(
 
     arrCreatedPaths: List[str] = []
     arrExpectedGroups = [pszName for _, pszName in GROUPS]
+    dicStep0001Paths: Dict[Tuple[str, str, int, int], str] = {}
+    for pszPath in arrStep0001Paths:
+        objMatch = re.fullmatch(
+            r"(.+)_step0001_(\d{4})_(\d{2})(?:_\d+)*\.tsv", os.path.basename(pszPath)
+        )
+        if objMatch is None:
+            raise_conversion_error("INVALID_CONVERTED_DISCARD_FILENAME", pszPath)
+        pszBase, pszYear, pszMonth = objMatch.groups()
+        iYear, iMonth = parse_year_month(pszYear, pszMonth, 1)
+        objMonthlyKey = (
+            os.path.dirname(os.path.abspath(pszPath)), pszBase, iYear, iMonth
+        )
+        if objMonthlyKey in dicStep0001Paths:
+            raise_conversion_error(
+                "DUPLICATE_CONVERTED_DISCARD_INPUT",
+                "duplicate step0001 input. Key = " + str(objMonthlyKey) + "; Path = " + pszPath,
+            )
+        dicStep0001Paths[objMonthlyKey] = pszPath
+    dicConvertedWeights: Dict[Tuple[str, str, int, int], Dict[str, Decimal]] = {}
     for objKey in dicStep0004Groups:
         for pszItem in arrPreItems:
             if (*objKey, pszItem) not in dicPreCounts:
@@ -5515,6 +5592,17 @@ def create_step0008_group_discard_deduction_files(
                     "MISSING_PRE_SHACKLING_INPUT",
                     "missing input for 契約・直営・フリー. Path = " + pszExpectedPath,
                 )
+        if objKey not in dicStep0001Paths:
+            raise_conversion_error(
+                "MISSING_CONVERTED_DISCARD_INPUT",
+                "missing step0001 input for 契約・直営・フリー. Key = " + str(objKey)
+                + "; Path = " + os.path.join(
+                    objKey[0], f"{objKey[1]}_step0001_{objKey[2]:04d}_{objKey[3]:02d}.tsv"
+                ),
+            )
+        dicConvertedWeights[objKey] = read_group_converted_discard_weights(
+            dicStep0001Paths[objKey], objKey[2], objKey[3]
+        )
     try:
         for objKey in sorted(dicStep0004Groups):
             dicGroups = dicStep0004Groups[objKey]
@@ -5546,11 +5634,12 @@ def create_step0008_group_discard_deduction_files(
                     arrStep0004Fields[7],
                     *[dicPreCounts[(*objKey, pszItem)][pszGroupName]
                       for pszItem in arrPreItems],
+                    format(dicConvertedWeights[objKey][pszGroupName], ".1f"),
                 ]
                 arrOutputRows = [[
                     "年", "月", "ｸﾞﾙｰﾌﾟ№", "ｸﾞﾙｰﾌﾟ名", "入雛羽数",
                     "出荷羽数", "全廃棄羽数", "出荷重量", "全廃棄重量",
-                    "平均体重", *arrPreItems,
+                    "平均体重", *arrPreItems, "自主廃棄重量（0.72換算後）",
                 ], arrOutputFields]
                 pszOutputPath = (
                     create_step0008_group_discard_deduction_output_path(
@@ -5605,6 +5694,7 @@ def read_step0008_group_discard_row(
         "年", "月", "ｸﾞﾙｰﾌﾟ№", "ｸﾞﾙｰﾌﾟ名", "入雛羽数", "出荷羽数",
         "全廃棄羽数", "出荷重量", "全廃棄重量", "平均体重",
         "懸鳥前死鶏羽数", "懸鳥前発育不良羽数",
+        "懸鳥前死鶏重量", "懸鳥前発育不良重量", "自主廃棄重量（0.72換算後）",
     ]
     try:
         with open(pszInputPath, "r", encoding="utf-8", newline="") as objFile:
@@ -5621,13 +5711,13 @@ def read_step0008_group_discard_row(
         raise_conversion_error(
             "INVALID_STEP0008_GROUP_DISCARD_ROWS",
             "step0008 group discard TSV must contain the expected header and "
-            "one data row. 旧形式の10列TSVはstep0008から再作成してください。Path = " + pszInputPath,
+            "one data row. 旧形式の10列・12列TSVはstep0008から再作成してください。Path = " + pszInputPath,
         )
     arrFields = arrRows[1]
     if len(arrFields) != len(arrExpectedHeader):
         raise_conversion_error(
             "INVALID_STEP0008_GROUP_DISCARD_COLUMNS",
-            "step0008 must contain 12 columns. step0008から再作成してください。Path = "
+            "step0008 must contain 15 columns. step0008から再作成してください。Path = "
             + pszInputPath,
         )
     try:
@@ -5651,7 +5741,7 @@ def read_step0008_group_discard_row(
             "step0008 row keys did not match the file name. Path = "
             + pszInputPath,
         )
-    for iColumn, pszItem in [(10, "懸鳥前死鶏羽数"), (11, "懸鳥前発育不良羽数")]:
+    for iColumn, pszItem in enumerate(arrExpectedHeader[10:], start=10):
         try:
             parse_step0008_group_discard_numeric_value(arrFields[iColumn], pszItem, pszInputPath)
         except ConversionError as objException:
@@ -5723,9 +5813,15 @@ def create_step0009_group_discard_row(
             arrInputFields[7], "出荷重量", pszInputPath
         )
         - parse_step0008_group_discard_numeric_value(
-            arrInputFields[8], "全廃棄重量", pszInputPath
+            arrInputFields[12], "懸鳥前死鶏重量", pszInputPath
         )
-    )
+        - parse_step0008_group_discard_numeric_value(
+            arrInputFields[13], "懸鳥前発育不良重量", pszInputPath
+        )
+        - parse_step0008_group_discard_numeric_value(
+            arrInputFields[14], "自主廃棄重量（0.72換算後）", pszInputPath
+        )
+    ).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
     objAverageWeight = (
         (objProcessedWeight / objProcessedCount).quantize(
             Decimal("0.00000001"), rounding=ROUND_HALF_UP
@@ -5743,7 +5839,7 @@ def create_step0009_group_discard_row(
             )
         ),
         format_sum_value(objProcessedCount),
-        format_sum_value(objProcessedWeight),
+        format(objProcessedWeight, ".1f"),
         format_sum_value(objAverageWeight),
     ]
 
@@ -18590,6 +18686,7 @@ def main() -> int:
                 arrStep0007GroupTotalDiscardCountPaths,
                 arrStep0007GroupTotalDiscardWeightPaths,
                 arrStep0003Paths,
+                arrMonthlyTsvPaths,
             )
         )
         arrStep0009GroupDiscardPaths = create_step0009_group_discard_files(
