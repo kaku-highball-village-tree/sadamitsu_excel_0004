@@ -1915,6 +1915,7 @@ def create_step0007_variety_files(
     arrRequiredItems = [
         "出荷羽数", "出荷重量",
         *STEP0004_TOTAL_COUNT_ITEMS, *STEP0004_TOTAL_WEIGHT_ITEMS,
+        "懸鳥前死鶏羽数", "懸鳥前発育不良羽数",
     ]
     arrOutputItems = [
         "全廃棄羽数", "全廃棄重量", "処理羽数", "処理重量", "平均体重",
@@ -1922,6 +1923,28 @@ def create_step0007_variety_files(
     arrCreatedPaths: List[str] = []
     try:
         for iYear, iMonth in arrStep0003YearMonths:
+            pszSourcePath = dicPaths[(iYear, iMonth, "出荷羽数")]
+            objSourceMatch = re.fullmatch(
+                r"(.+)_step0003_品種別_出荷羽数_\d{4}_\d{2}(?:_\d+)*\.tsv",
+                os.path.basename(pszSourcePath),
+            )
+            if objSourceMatch is None:
+                raise_conversion_error("INVALID_VARIETY_SHIPPING_FILENAME", pszSourcePath)
+            for pszPreItem in ["懸鳥前死鶏羽数", "懸鳥前発育不良羽数"]:
+                pszPrePath = dicPaths[(iYear, iMonth, pszPreItem)]
+                pszPattern = (
+                    re.escape(objSourceMatch.group(1)) + "_step0003_品種別_"
+                    + re.escape(pszPreItem) + f"_{iYear:04d}_{iMonth:02d}"
+                    + r"(?:_\d+)*\.tsv"
+                )
+                if (os.path.dirname(os.path.abspath(pszPrePath))
+                        != os.path.dirname(os.path.abspath(pszSourcePath))
+                        or re.fullmatch(pszPattern, os.path.basename(pszPrePath)) is None):
+                    raise_conversion_error(
+                        "VARIETY_PRE_SHACKLING_INPUT_MISMATCH",
+                        f"Year/month = {iYear:04d}/{iMonth:02d}; Item = {pszPreItem}; "
+                        f"Path = {pszPrePath}; Source = {pszSourcePath}",
+                    )
             dicItemRows = {
                 pszItemName: read_step0003_for_step0004(
                     dicPaths[(iYear, iMonth, pszItemName)],
@@ -1952,6 +1975,8 @@ def create_step0007_variety_files(
                 ).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
                 objProcessedCount = (
                     Decimal(dicItemRows["出荷羽数"][objVarietyKey][4]) - objDiscardCount
+                    - Decimal(dicItemRows["懸鳥前死鶏羽数"][objVarietyKey][4])
+                    - Decimal(dicItemRows["懸鳥前発育不良羽数"][objVarietyKey][4])
                 )
                 objProcessedWeight = (
                     Decimal(dicItemRows["出荷重量"][objVarietyKey][4]) - objDiscardWeight
