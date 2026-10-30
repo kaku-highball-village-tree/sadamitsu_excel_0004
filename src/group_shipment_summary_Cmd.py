@@ -1904,9 +1904,59 @@ def create_step0007_variety_output_path(
     return pszOutputPath
 
 
+def read_variety_converted_discard_weights(
+    pszPath: str, iYear: int, iMonth: int
+) -> Dict[Tuple[str, str], Decimal]:
+    """既存の品種区分で、明細ごとの0.72換算・切り捨て重量を合計します。"""
+    dicTotals = {key: Decimal("0") for key in SPLIT_VARIETIES}
+    arrWeightItems = STEP0004_TOTAL_WEIGHT_ITEMS + ["予備３重量", "予備４重量"]
+    pszContext = f"Year/month = {iYear:04d}/{iMonth:02d}; Path = {pszPath}"
+    with open(pszPath, "r", encoding="utf-8-sig", newline="") as objFile:
+        objReader = csv.reader(objFile, delimiter="\t")
+        arrHeader = next(objReader, [])
+        if (len(arrHeader) != 64
+                or [arrHeader[i] for i in (0, 1, 10, 11, 15, 16)]
+                != ["年", "月", "ｸﾞﾙｰﾌﾟ№", "ｸﾞﾙｰﾌﾟ名", "品種№", "品種名"]
+                or arrHeader[47:64] != arrWeightItems):
+            raise_conversion_error("INVALID_VARIETY_WEIGHT_HEADER", pszContext)
+        for iLine, arrFields in enumerate(objReader, start=2):
+            pszRowContext = pszContext + f"; Line = {iLine}"
+            if len(arrFields) != 64:
+                raise_conversion_error("INVALID_VARIETY_WEIGHT_COLUMNS", pszRowContext)
+            objKey = (arrFields[15].strip(), arrFields[16].strip(" \u3000\t"))
+            pszRowContext += "; Variety = " + str(objKey)
+            try:
+                if (parse_year_month(arrFields[0], arrFields[1], iLine) != (iYear, iMonth)
+                        or objKey not in VARIETIES):
+                    raise ValueError("year/month or variety did not match")
+                if objKey == ("1", "ブロイラー"):
+                    pszGroup = arrFields[10].strip()
+                    if pszGroup not in {"1", "2", "4"}:
+                        raise ValueError("invalid broiler group")
+                    objKey = BROILER_BREAKDOWNS[0 if pszGroup in {"1", "2"} else 1]
+                objSubtotal = Decimal("0")
+                for iColumn, pszItem in enumerate(arrWeightItems, start=47):
+                    objValue = parse_decimal_value(
+                        arrFields[iColumn].replace(",", ""), iLine, iColumn, pszItem
+                    )
+                    if objValue is None:
+                        raise ValueError("blank weight. Item = " + pszItem)
+                    objSubtotal += objValue
+            except (ConversionError, ValueError) as objException:
+                raise_conversion_error(
+                    "INVALID_VARIETY_WEIGHT_ROW",
+                    pszRowContext + "; Detail = " + str(objException),
+                )
+            dicTotals[objKey] += (objSubtotal / Decimal("0.72")).quantize(
+                Decimal("0.1"), rounding=ROUND_DOWN
+            )
+    return dicTotals
+
+
 def create_step0007_variety_files(
     arrStep0003VarietyPaths: List[str],
     arrStep0003YearMonths: List[Tuple[int, int]],
+    arrStep0001Paths: List[str],
 ) -> List[str]:
     """品種別step0003から廃棄合計と廃棄控除後の3項目を追加出力します。"""
     dicPaths = build_step0003_path_map(
@@ -1916,11 +1966,28 @@ def create_step0007_variety_files(
         "出荷羽数", "出荷重量",
         *STEP0004_TOTAL_COUNT_ITEMS, *STEP0004_TOTAL_WEIGHT_ITEMS,
         "懸鳥前死鶏羽数", "懸鳥前発育不良羽数",
+        "懸鳥前死鶏重量", "懸鳥前発育不良重量",
     ]
     arrOutputItems = [
         "全廃棄羽数", "全廃棄重量", "処理羽数", "処理重量", "平均体重",
     ]
     arrCreatedPaths: List[str] = []
+    dicMonthlyPaths: Dict[Tuple[str, str, int, int], str] = {}
+    for pszPath in arrStep0001Paths:
+        objMatch = re.fullmatch(
+            r"(.+)_step0001_(\d{4})_(\d{2})(?:_\d+)*\.tsv", os.path.basename(pszPath)
+        )
+        if objMatch is None:
+            raise_conversion_error("INVALID_VARIETY_WEIGHT_FILENAME", pszPath)
+        pszBase, pszYear, pszMonth = objMatch.groups()
+        iYear, iMonth = parse_year_month(pszYear, pszMonth, 1)
+        objMonthlyKey = (os.path.dirname(os.path.abspath(pszPath)), pszBase, iYear, iMonth)
+        if objMonthlyKey in dicMonthlyPaths:
+            raise_conversion_error(
+                "DUPLICATE_VARIETY_WEIGHT_INPUT",
+                "duplicate step0001 input. Key = " + str(objMonthlyKey) + "; Path = " + pszPath,
+            )
+        dicMonthlyPaths[objMonthlyKey] = pszPath
     try:
         for iYear, iMonth in arrStep0003YearMonths:
             pszSourcePath = dicPaths[(iYear, iMonth, "出荷羽数")]
@@ -1930,7 +1997,10 @@ def create_step0007_variety_files(
             )
             if objSourceMatch is None:
                 raise_conversion_error("INVALID_VARIETY_SHIPPING_FILENAME", pszSourcePath)
-            for pszPreItem in ["懸鳥前死鶏羽数", "懸鳥前発育不良羽数"]:
+            for pszPreItem in [
+                "懸鳥前死鶏羽数", "懸鳥前発育不良羽数",
+                "懸鳥前死鶏重量", "懸鳥前発育不良重量",
+            ]:
                 pszPrePath = dicPaths[(iYear, iMonth, pszPreItem)]
                 pszPattern = (
                     re.escape(objSourceMatch.group(1)) + "_step0003_品種別_"
@@ -1945,6 +2015,18 @@ def create_step0007_variety_files(
                         f"Year/month = {iYear:04d}/{iMonth:02d}; Item = {pszPreItem}; "
                         f"Path = {pszPrePath}; Source = {pszSourcePath}",
                     )
+            objMonthlyKey = (
+                os.path.dirname(os.path.abspath(pszSourcePath)),
+                objSourceMatch.group(1), iYear, iMonth,
+            )
+            if objMonthlyKey not in dicMonthlyPaths:
+                raise_conversion_error(
+                    "MISSING_VARIETY_WEIGHT_INPUT",
+                    "missing step0001. Key = " + str(objMonthlyKey) + "; Source = " + pszSourcePath,
+                )
+            dicConvertedWeights = read_variety_converted_discard_weights(
+                dicMonthlyPaths[objMonthlyKey], iYear, iMonth
+            )
             dicItemRows = {
                 pszItemName: read_step0003_for_step0004(
                     dicPaths[(iYear, iMonth, pszItemName)],
@@ -1979,8 +2061,11 @@ def create_step0007_variety_files(
                     - Decimal(dicItemRows["懸鳥前発育不良羽数"][objVarietyKey][4])
                 )
                 objProcessedWeight = (
-                    Decimal(dicItemRows["出荷重量"][objVarietyKey][4]) - objDiscardWeight
-                )
+                    Decimal(dicItemRows["出荷重量"][objVarietyKey][4])
+                    - Decimal(dicItemRows["懸鳥前死鶏重量"][objVarietyKey][4])
+                    - Decimal(dicItemRows["懸鳥前発育不良重量"][objVarietyKey][4])
+                    - dicConvertedWeights[objVarietyKey]
+                ).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
                 objAverageWeight = (
                     (objProcessedWeight / objProcessedCount).quantize(
                         Decimal("0.00000001"), rounding=ROUND_HALF_UP
@@ -1990,7 +2075,7 @@ def create_step0007_variety_files(
                     format(Decimal(format_sum_value(objDiscardCount)), ",f"),
                     format(objDiscardWeight, ",.1f"),
                     format_sum_value(objProcessedCount),
-                    format_sum_value(objProcessedWeight),
+                    format(objProcessedWeight, ".1f"),
                     format_sum_value(objAverageWeight),
                 ]
                 for pszItemName, pszValue in zip(arrOutputItems, arrValues):
@@ -18428,7 +18513,7 @@ def main() -> int:
             )
         )
         arrStep0007VarietyPaths = create_step0007_variety_files(
-            arrStep0003VarietyPaths, arrStep0003VarietyYearMonths
+            arrStep0003VarietyPaths, arrStep0003VarietyYearMonths, arrMonthlyTsvPaths
         )
         arrStep0003VarietyDeductionGrowthRatePaths = (
             create_step0003_variety_deduction_growth_rate_files(
