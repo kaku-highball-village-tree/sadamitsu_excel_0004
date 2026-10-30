@@ -17,8 +17,14 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.cell.cell import Cell
 from openpyxl.chart import LineChart, Reference
 from openpyxl.chart.axis import ChartLines
+from openpyxl.chart.layout import Layout, ManualLayout
 from openpyxl.chart.shapes import GraphicalProperties
+from openpyxl.chart.text import RichText
 from openpyxl.drawing.line import LineProperties
+from openpyxl.drawing.text import (
+    CharacterProperties, Font as DrawingFont, Paragraph, ParagraphProperties,
+    RichTextProperties,
+)
 from openpyxl.styles import Border, Color, Side
 from openpyxl.utils import get_column_letter
 
@@ -9327,6 +9333,53 @@ def create_discard_summary_monthly_charts(pszExcelPath: str) -> None:
             objChart = LineChart()
             objChart.title = pszTitle
             objChart.y_axis.title = "羽数"
+            objTextStyle = CharacterProperties(
+                latin=DrawingFont(typeface="ＭＳ Ｐゴシック"),
+                ea=DrawingFont(typeface="ＭＳ Ｐゴシック"),
+                lang="ja-JP", sz=1000, solidFill="000000",
+            )
+            for objAxis in (objChart.x_axis, objChart.y_axis):
+                objAxis.delete = False
+                objAxis.majorTickMark = "out"
+                objAxis.minorTickMark = "none"
+                objAxis.txPr = RichText(
+                    bodyPr=RichTextProperties(rot=0, vert="horz"),
+                    p=[Paragraph(
+                        pPr=ParagraphProperties(defRPr=objTextStyle),
+                        endParaRPr=objTextStyle,
+                    )],
+                )
+            objChart.x_axis.axPos = "b"
+            objChart.y_axis.axPos = "l"
+            objChart.y_axis.tickLblPos = "nextTo"
+            objChart.y_axis.crosses = "min"
+            objChart.x_axis.crosses = "min"
+            for objTitle in (objChart.title, objChart.y_axis.title):
+                objTitle.overlay = False
+                for objParagraph in objTitle.tx.rich.p:
+                    objParagraph.pPr = ParagraphProperties(defRPr=objTextStyle)
+                    objParagraph.endParaRPr = objTextStyle
+                    for objRun in objParagraph.r:
+                        objRun.rPr = objTextStyle
+            objChart.title.tx.rich.bodyPr = RichTextProperties(rot=0, vert="horz")
+            objChart.y_axis.title.tx.rich.bodyPr = RichTextProperties(rot=0, vert="eaVert")
+            # タイトル・凡例・軸文字の領域を分け、描画領域との重なりを防ぎます。
+            objChart.title.layout = Layout(manualLayout=ManualLayout(
+                x=0.25, y=0.01, w=0.5, h=0.07,
+            ))
+            objChart.y_axis.title.layout = Layout(manualLayout=ManualLayout(
+                x=0.0, y=0.43, w=0.04, h=0.18,
+            ))
+            objChart.legend.layout = Layout(manualLayout=ManualLayout(
+                x=0.09, y=0.10, w=0.87, h=0.08,
+            ))
+            objChart.legend.txPr = RichText(p=[Paragraph(
+                pPr=ParagraphProperties(defRPr=objTextStyle), endParaRPr=objTextStyle,
+            )])
+            objChart.layout = Layout(manualLayout=ManualLayout(
+                layoutTarget="inner", xMode="factor", yMode="factor",
+                wMode="factor", hMode="factor", x=0.14, y=0.28, w=0.82, h=0.58,
+            ))
             objChart.y_axis.scaling.min = 0
             objChart.y_axis.numFmt = "#,##0"
             objChart.x_axis.tickLblPos = "low"
