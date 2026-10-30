@@ -15,6 +15,10 @@ from typing import Any, Dict, List, NoReturn, Optional, Tuple
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.cell.cell import Cell
+from openpyxl.chart import LineChart, Reference
+from openpyxl.chart.axis import ChartLines
+from openpyxl.chart.shapes import GraphicalProperties
+from openpyxl.drawing.line import LineProperties
 from openpyxl.styles import Border, Color, Side
 from openpyxl.utils import get_column_letter
 
@@ -9207,6 +9211,172 @@ def apply_discard_summary_monthly_borders(pszExcelPath: str) -> None:
             os.remove(pszTemporaryPath)
 
 
+def create_discard_summary_monthly_charts(pszExcelPath: str) -> None:
+    """総計の羽数を使った過去5年・8項目の編集可能なグラフを追加します。"""
+    arrItems = [
+        ("懸鳥前死鶏", 6), ("懸鳥前発育不良", 7),
+        ("マレック病", 9), ("大腸菌症", 10),
+        ("ブドウ球菌症", 11), ("敗血症", 12), ("変性", 13), ("腹水症", 14),
+    ]
+    arrStyles = [
+        ("000080", "diamond"), ("FF00FF", "square"), ("FFFF00", "triangle"),
+        ("FFA500", "x"), ("5B9BD5", "star"),
+    ]
+    pszMarker = "group_shipment_summary_discard_charts_v1"
+    objWorkbook = load_workbook(pszExcelPath)
+    pszTemporaryPath = ""
+    try:
+        objSource = objWorkbook["総計"]
+        arrExpectedHeaders = [
+            "死鶏", "発育不良", "マレック", "大腸菌症", "ブドウ球菌症", "敗血症", "変性", "腹水症"
+        ]
+        if [objSource.cell(2, col).value for _, col in arrItems] != arrExpectedHeaders:
+            raise_conversion_error("INVALID_DISCARD_CHART_HEADERS", pszExcelPath)
+        dicValues: Dict[Tuple[int, int], List[Optional[float]]] = {}
+        for iRow in range(3, objSource.max_row + 1):
+            if objSource.cell(iRow, 5).value != "羽数":
+                continue
+            try:
+                objKey = parse_year_month(
+                    str(objSource.cell(iRow, 1).value),
+                    str(objSource.cell(iRow, 2).value), iRow,
+                )
+                if objKey in dicValues:
+                    raise ValueError("duplicate year/month")
+                arrValues: List[Optional[float]] = []
+                for pszTitle, iColumn in arrItems:
+                    objValue = objSource.cell(iRow, iColumn).value
+                    objNumber = parse_decimal_value(
+                        "" if objValue is None else str(objValue).replace(",", ""),
+                        iRow, iColumn, pszTitle,
+                    )
+                    arrValues.append(float(objNumber) if objNumber is not None else None)
+                dicValues[objKey] = arrValues
+            except (ConversionError, ValueError) as objException:
+                raise_conversion_error(
+                    "INVALID_DISCARD_CHART_DATA",
+                    f"Path = {pszExcelPath}; Sheet = 総計; Row = {iRow}; Detail = {objException}",
+                )
+        if not dicValues:
+            raise_conversion_error("DISCARD_CHART_DATA_MISSING", pszExcelPath)
+        objMatch = re.fullmatch(
+            r"〇廃棄データ月別一覧表～(\d{4})年(\d{2})月(?:_\d+)*\.xlsx",
+            os.path.basename(pszExcelPath),
+        )
+        iLatestYear, iLatestMonth = (
+            parse_year_month(objMatch.group(1), objMatch.group(2), 1)
+            if objMatch is not None else max(dicValues)
+        )
+        iSheetIndex = len(objWorkbook.worksheets)
+        if "グラフ" in objWorkbook.sheetnames:
+            objExisting = objWorkbook["グラフ"]
+            bOwned = objExisting["AA1"].value == pszMarker
+            # 管理範囲外の値や追加された図表は、無関係な内容として保護します。
+            bOwned = bOwned and not objExisting._images and not objExisting.tables
+            bOwned = bOwned and not objExisting.merged_cells.ranges
+            bOwned = bOwned and all(
+                not cell.comment and not cell.hyperlink and not cell.has_style
+                and (cell.value is None or cell.coordinate == "AA1" or (
+                    27 <= cell.column <= 32 and 3 <= cell.row <= 120
+                    and (cell.row - 3) % 15 <= 12
+                ))
+                for cell in objExisting._cells.values()
+            )
+            bOwned = bOwned and len(objExisting._charts) == len(arrItems)
+            if bOwned:
+                for iIndex, objChart in enumerate(objExisting._charts):
+                    pszTitle = "".join(
+                        node.text or "" for node in objChart.title.to_tree().iter()
+                        if node.tag.endswith("}t")
+                    ) if objChart.title is not None else ""
+                    if (pszTitle != arrItems[iIndex][0]
+                            or objChart.anchor._from.col != (iIndex % 2) * 10
+                            or objChart.anchor._from.row != (iIndex // 2) * 20):
+                        bOwned = False
+                        break
+            if not bOwned:
+                raise_conversion_error(
+                    "DISCARD_CHART_SHEET_CONFLICT",
+                    "既存の「グラフ」シートに別の内容があるため更新できません。Path = " + pszExcelPath,
+                )
+            iSheetIndex = objWorkbook.index(objExisting)
+            objWorkbook.remove(objExisting)
+        objSheet = objWorkbook.create_sheet("グラフ", iSheetIndex)
+        objSheet["AA1"] = pszMarker
+        for iColumn in range(1, 21):
+            objSheet.column_dimensions[get_column_letter(iColumn)].width = 9
+        for iRow in range(1, 81):
+            objSheet.row_dimensions[iRow].height = 16
+        for iColumn in range(27, 33):
+            objSheet.column_dimensions[get_column_letter(iColumn)].hidden = True
+        for iIndex, (pszTitle, _) in enumerate(arrItems):
+            iHeaderRow = 3 + iIndex * 15
+            objSheet.cell(iHeaderRow, 27, "月")
+            for iMonth in range(1, 13):
+                objSheet.cell(iHeaderRow + iMonth, 27, f"{iMonth}月")
+            for iYearIndex in range(5):
+                iYear = iLatestYear - iYearIndex
+                objSheet.cell(iHeaderRow, 28 + iYearIndex, f"{iYear}年")
+                for iMonth in range(1, 13):
+                    # 未到来月・欠損は空欄、実績0は数値の0として保持します。
+                    if (iYear, iMonth) > (iLatestYear, iLatestMonth):
+                        continue
+                    arrValues = dicValues.get((iYear, iMonth))
+                    if arrValues is not None and arrValues[iIndex] is not None:
+                        objSheet.cell(iHeaderRow + iMonth, 28 + iYearIndex, arrValues[iIndex])
+            objChart = LineChart()
+            objChart.title = pszTitle
+            objChart.y_axis.title = "羽数"
+            objChart.y_axis.scaling.min = 0
+            objChart.y_axis.numFmt = "#,##0"
+            objChart.x_axis.tickLblPos = "low"
+            objChart.x_axis.tickLblSkip = 1
+            objChart.legend.position = "t"
+            objChart.legend.overlay = False
+            objChart.legend.spPr = GraphicalProperties(
+                solidFill="FFFFFF", ln=LineProperties(solidFill="000000")
+            )
+            objChart.plot_area.spPr = GraphicalProperties(
+                solidFill="C0C0C0", ln=LineProperties(solidFill="000000")
+            )
+            objChart.y_axis.majorGridlines = ChartLines(
+                spPr=GraphicalProperties(ln=LineProperties(solidFill="000000", w=6350))
+            )
+            objChart.display_blanks = "gap"
+            objChart.visible_cells_only = False
+            objChart.width = 15.5
+            objChart.height = 9
+            objChart.add_data(Reference(
+                objSheet, min_col=28, max_col=32,
+                min_row=iHeaderRow, max_row=iHeaderRow + 12,
+            ), titles_from_data=True)
+            objChart.set_categories(Reference(
+                objSheet, min_col=27, min_row=iHeaderRow + 1, max_row=iHeaderRow + 12,
+            ))
+            for objSeries, (pszColor, pszSymbol) in zip(objChart.series, arrStyles):
+                objSeries.graphicalProperties.line.solidFill = pszColor
+                objSeries.graphicalProperties.line.width = 19050
+                objSeries.marker.symbol = pszSymbol
+                objSeries.marker.size = 5
+                objSeries.marker.graphicalProperties.solidFill = pszColor
+                objSeries.marker.graphicalProperties.line.solidFill = pszColor
+                objSeries.smooth = False
+            objSheet.add_chart(objChart, f"{'A' if iIndex % 2 == 0 else 'K'}{1 + (iIndex // 2) * 20}")
+        iFileDescriptor, pszTemporaryPath = tempfile.mkstemp(
+            prefix="group_shipment_summary_discard_charts_", suffix=".xlsx",
+            dir=os.path.dirname(os.path.abspath(pszExcelPath)),
+        )
+        os.close(iFileDescriptor)
+        objWorkbook.save(pszTemporaryPath)
+        objWorkbook.close()
+        os.replace(pszTemporaryPath, pszExcelPath)
+        pszTemporaryPath = ""
+    finally:
+        objWorkbook.close()
+        if pszTemporaryPath and os.path.exists(pszTemporaryPath):
+            os.remove(pszTemporaryPath)
+
+
 def create_discard_summary_monthly_named_copies(
     arrExcelPaths: List[str],
 ) -> List[str]:
@@ -9249,6 +9419,7 @@ def create_discard_summary_monthly_named_copies(
             shutil.copy2(pszExcelPath, pszOutputPath)
             arrCreatedPaths.append(pszOutputPath)
             apply_discard_summary_monthly_borders(pszOutputPath)
+            create_discard_summary_monthly_charts(pszOutputPath)
         return arrCreatedPaths
     except Exception:
         for pszPath in arrCreatedPaths:
