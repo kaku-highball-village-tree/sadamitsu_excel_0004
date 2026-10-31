@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """Excelの「詳細データ」シートをTSVにするWindows DnD画面です。"""
 
-import argparse
 import os
 import subprocess
 import sys
@@ -14,7 +13,6 @@ import win32gui
 
 SUPPORTED_EXTENSIONS = {".xlsx", ".xlsm"}
 WINDOW_TITLE = "Group Shipment Summary (Drag & Drop)"
-PLAN_EXCEL_PATH = ""
 
 
 def show_message_box(pszMessage: str, pszTitle: str = WINDOW_TITLE) -> None:
@@ -197,7 +195,7 @@ def extract_warning_file_path(pszStdOut: str) -> str:
     return ""
 
 
-def run_excel_to_tsv(pszInputExcelPath: str, pszPlanExcelPath: str = "") -> None:
+def run_excel_to_tsv(pszInputExcelPath: str) -> None:
     pszScriptPath: str = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "group_shipment_summary_Cmd.py"
     )
@@ -212,15 +210,8 @@ def run_excel_to_tsv(pszInputExcelPath: str, pszPlanExcelPath: str = "") -> None
         show_error_message_box(pszValidationError)
         return
 
-    if pszPlanExcelPath:
-        pszValidationError = validate_dropped_file(pszPlanExcelPath)
-        if pszValidationError:
-            show_error_message_box("計画Excel:\n" + pszValidationError)
-            return
     pszOutputTsvPath: str = create_output_path(pszInputExcelPath)
     arrCommand = [sys.executable, pszScriptPath, pszOutputTsvPath, pszInputExcelPath]
-    if pszPlanExcelPath:
-        arrCommand.extend(["--plan-excel", pszPlanExcelPath])
     try:
         objCompletedProcess: subprocess.CompletedProcess[str] = subprocess.run(
             arrCommand,
@@ -255,7 +246,11 @@ def run_excel_to_tsv(pszInputExcelPath: str, pszPlanExcelPath: str = "") -> None
     pszStdOut: str = objCompletedProcess.stdout.strip()
     pszWarningFilePath: str = extract_warning_file_path(pszStdOut)
     arrPlanWarnings = [line for line in pszStdOut.splitlines() if line.startswith("step0018警告: ")]
-    bHasWarning = bool(pszWarningFilePath or arrPlanWarnings)
+    pszStep0018WarningPath = next(
+        (line[len("step0018警告ファイル: "):] for line in pszStdOut.splitlines()
+         if line.startswith("step0018警告ファイル: ")), ""
+    )
+    bHasWarning = bool(pszWarningFilePath or arrPlanWarnings or pszStep0018WarningPath)
     pszMessage = (
         (
             "処理が警告付きで完了しました。"
@@ -390,6 +385,8 @@ def run_excel_to_tsv(pszInputExcelPath: str, pszPlanExcelPath: str = "") -> None
         pszMessage += "\n\n出荷廃棄羽数過去5年集計Excel:\n" + "\n".join(arrNamedTotalCountHistoryExcelPaths)
     if pszWarningFilePath:
         pszMessage += "\n\n警告ファイル:\n" + pszWarningFilePath
+    if pszStep0018WarningPath:
+        pszMessage += "\n\nstep0018警告ファイル:\n" + pszStep0018WarningPath
     arrPlanDetails = [line for line in pszStdOut.splitlines() if line.startswith("step0018")]
     if arrPlanDetails:
         pszMessage += "\n\n計画・実績対比（廃棄控除前）:\n" + "\n".join(arrPlanDetails)
@@ -724,8 +721,11 @@ def draw_instruction_text(iWindowHandle: int) -> None:
         "出力TSVは入力Excelと同じフォルダに作成します。\n\n"
         "対応形式: .xlsx / .xlsm"
     )
-    if PLAN_EXCEL_PATH:
-        pszInstructionText = "計画・実績対比TSVも作成します。計画Excel: " + PLAN_EXCEL_PATH + "\n\n" + pszInstructionText
+    pszInstructionText = (
+        "同じフォルダーに対象年の計画_YYYY年.xlsxがあれば、\n"
+        "実績のある年ごとに計画・実績対比TSVも作成します。\n\n"
+        + pszInstructionText
+    )
     win32gui.DrawText(
         iDeviceContextHandle,
         pszInstructionText,
@@ -761,7 +761,7 @@ def window_proc(iWindowHandle: int, iMessage: int, iWparam: int, iLparam: int) -
                 "ドロップされたファイル数: " + str(len(arrInputPaths))
             )
             return 0
-        run_excel_to_tsv(arrInputPaths[0], PLAN_EXCEL_PATH)
+        run_excel_to_tsv(arrInputPaths[0])
         return 0
     if iMessage == win32con.WM_PAINT:
         draw_instruction_text(iWindowHandle)
@@ -773,16 +773,6 @@ def window_proc(iWindowHandle: int, iMessage: int, iWparam: int, iLparam: int) -
 
 
 def main() -> None:
-    global PLAN_EXCEL_PATH
-    objParser = argparse.ArgumentParser(description="詳細データExcelをドラッグ＆ドロップして集計します。")
-    objParser.add_argument("--plan-excel", metavar="PATH", help="品種別計画・実績対比TSVを追加作成する計画Excel")
-    objArgs = objParser.parse_args()
-    PLAN_EXCEL_PATH = os.path.abspath(objArgs.plan_excel) if objArgs.plan_excel is not None else ""
-    if PLAN_EXCEL_PATH:
-        pszValidationError = validate_dropped_file(PLAN_EXCEL_PATH)
-        if pszValidationError:
-            show_error_message_box("計画Excel:\n" + pszValidationError)
-            return
     pszWindowClassName: str = "GroupShipmentSummaryDndWindowClass"
     iInstanceHandle: int = win32api.GetModuleHandle(None)
     objWndClass = win32gui.WNDCLASS()

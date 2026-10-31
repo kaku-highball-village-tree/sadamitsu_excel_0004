@@ -19066,22 +19066,127 @@ def create_step0018_file(
     return pszOutputPath
 
 
+def write_step0018_warning_file(pszInputExcelPath: str, arrWarnings: List[str]) -> str:
+    pszDirectory = os.path.dirname(os.path.abspath(pszInputExcelPath))
+    pszStem = "step0018の作成についての_warning"
+    iSuffix = 1
+    while True:
+        pszName = pszStem + ("" if iSuffix == 1 else f"_{iSuffix:02d}") + ".txt"
+        pszPath = os.path.join(pszDirectory, pszName)
+        try:
+            iDescriptor = os.open(pszPath, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            iSuffix += 1
+        except OSError as objException:
+            raise_conversion_error("STEP0018_WARNING_CREATE_FAILED", str(objException))
+    try:
+        with os.fdopen(iDescriptor, "w", encoding="utf-8-sig", newline="") as objFile:
+            objFile.write("step0018の計画・実績対比TSVを作成できなかった年があります。\r\n")
+            objFile.write("元データExcel: " + os.path.abspath(pszInputExcelPath) + "\r\n")
+            objFile.write("警告件数: " + str(len(arrWarnings)) + "\r\n")
+            for iIndex, pszWarning in enumerate(arrWarnings, start=1):
+                objFile.write(f"\r\n[警告 {iIndex}]\r\n{pszWarning}\r\n")
+        return pszPath
+    except Exception as objException:
+        if os.path.exists(pszPath):
+            os.remove(pszPath)
+        raise_conversion_error("STEP0018_WARNING_CREATE_FAILED", str(objException))
+
+
+def create_step0018_files(
+    pszInputExcelPath: str,
+    arrActualPaths: List[str],
+    arrYearMonths: List[Tuple[int, int]],
+) -> List[str]:
+    """同じフォルダーの年別計画を、今回生成した年別実績TSVと照合します。"""
+    pszDirectory = os.path.dirname(os.path.abspath(pszInputExcelPath))
+    dicActualByYear: Dict[int, List[str]] = {}
+    for pszPath in arrActualPaths:
+        objMatch = re.fullmatch(
+            r".+_step0013_品種別_([0-9]{4})_年間(?:_[0-9]+)?\.tsv",
+            os.path.basename(pszPath),
+        )
+        if objMatch:
+            dicActualByYear.setdefault(int(objMatch.group(1)), []).append(pszPath)
+    setActualYears = {iYear for iYear, _ in arrYearMonths}
+
+    dicPlanFiles: Dict[int, List[Tuple[str, bool]]] = {}
+    for pszName in os.listdir(pszDirectory):
+        objMatch = re.fullmatch(r"計画_([0-9]{4})年(.*)\.xlsx", pszName)
+        if objMatch:
+            dicPlanFiles.setdefault(int(objMatch.group(1)), []).append(
+                (os.path.join(pszDirectory, pszName), objMatch.group(2) == "")
+            )
+
+    arrCreatedPaths: List[str] = []
+    arrWarnings: List[str] = []
+    for iYear in sorted(setActualYears | set(dicPlanFiles)):
+        arrPlans = dicPlanFiles.get(iYear, [])
+        arrActuals = dicActualByYear.get(iYear, [])
+        pszExpectedPlanName = f"計画_{iYear}年.xlsx"
+        if len(arrPlans) > 1:
+            arrNames = ", ".join(os.path.basename(path) for path, _ in arrPlans)
+            arrWarnings.append(
+                f"{iYear}年: 同じ年の計画Excelが複数あるためstep0018を作成しません。"
+                f" 対象名: {arrNames}"
+            )
+            continue
+        if not arrPlans or not arrPlans[0][1]:
+            pszFound = (
+                " 見つかった別名の計画Excel: "
+                + ", ".join(os.path.basename(path) for path, _ in arrPlans)
+                if arrPlans else ""
+            )
+            arrWarnings.append(
+                f"{iYear}年: 計画Excel {pszExpectedPlanName} がないためstep0018を作成しません。"
+                + pszFound
+            )
+            continue
+        if not arrActuals:
+            arrWarnings.append(
+                f"{iYear}年: 実績TSVがないためstep0018を作成しません。"
+                f" 必要な実績: {iYear}年の通常版・品種別step0013年間TSV"
+            )
+            continue
+        if len(arrActuals) != 1:
+            raise_conversion_error(
+                "STEP0018_DUPLICATE_ACTUAL_YEAR",
+                f"{iYear}年の実績TSVが複数あります: " + ", ".join(arrActuals),
+            )
+        pszPlanPath = arrPlans[0][0]
+        objPlan = read_step0018_plan_excel(pszPlanPath)
+        if objPlan[0] != iYear:
+            raise_conversion_error(
+                "STEP0018_PLAN_FILENAME_YEAR_MISMATCH",
+                f"計画ファイル名の年 {iYear} と表題の年 {objPlan[0]} が一致しません: {pszPlanPath}",
+            )
+        arrCreatedPaths.append(
+            create_step0018_file(pszPlanPath, objPlan, arrActuals, arrYearMonths)
+        )
+    if arrWarnings:
+        pszWarningPath = write_step0018_warning_file(pszInputExcelPath, arrWarnings)
+        for pszWarning in arrWarnings:
+            print("step0018警告: " + pszWarning)
+        print("step0018警告ファイル: " + pszWarningPath)
+    if not arrCreatedPaths:
+        print("step0018計画実績対比ファイル: 0件")
+    return arrCreatedPaths
+
+
 def main() -> int:
     objParser = argparse.ArgumentParser(description="Excelの詳細データを集計します。")
     objParser.add_argument("output_tsv_path")
     objParser.add_argument("input_excel_path")
-    objParser.add_argument("--plan-excel", metavar="PATH", help="品種別計画・実績対比TSVを追加作成する計画Excel")
     try:
         objArgs = objParser.parse_args()
     except SystemExit as objException:
         return 0 if objException.code == 0 else 1
     pszOutputTsvPath: str = os.path.abspath(objArgs.output_tsv_path)
     pszInputExcelPath: str = os.path.abspath(objArgs.input_excel_path)
-    pszPlanExcelPath = os.path.abspath(objArgs.plan_excel) if objArgs.plan_excel is not None else ""
 
     try:
         validate_paths(pszOutputTsvPath, pszInputExcelPath)
-        objPlan = read_step0018_plan_excel(pszPlanExcelPath) if pszPlanExcelPath else None
         convert_excel_to_tsv(pszOutputTsvPath, pszInputExcelPath)
         (
             arrMonthlyTsvPaths,
@@ -19504,10 +19609,11 @@ def main() -> int:
         arrNamedGroupSummaryExcelPaths = create_group_summary_yearly_named_copies(
             arrStep0013GroupExcelPaths
         )
-        if objPlan is not None:
-            create_step0018_file(
-                pszPlanExcelPath, objPlan, arrStep0013VarietyPaths, arrStep0003VarietyYearMonths
-            )
+        create_step0018_files(
+            pszInputExcelPath,
+            arrStep0013VarietyPaths,
+            arrStep0003VarietyYearMonths,
+        )
     except Exception as objException:
         pszErrorCode: str = getattr(
             objException, "pszErrorCode", "UNEXPECTED_CONVERSION_ERROR"
