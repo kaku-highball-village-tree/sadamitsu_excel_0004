@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Excelの「詳細データ」シートをTSVファイルへ変換します。"""
 
+import argparse
 import calendar
 import csv
 import os
@@ -18752,20 +18753,335 @@ def convert_excel_to_tsv(pszOutputTsvPath: str, pszInputExcelPath: str) -> Tuple
             os.remove(pszOutputTsvPath)
 
 
-def main() -> int:
-    if len(sys.argv) != 3:
-        print(
-            "Usage: python group_shipment_summary_Cmd.py "
-            "<output_tsv_path> <input_excel_path>",
-            file=sys.stderr,
-        )
-        return 1
+STEP0018_PLAN_NAMES = [
+    "阿波尾鶏", "赤どり", "地養鳥", "ブロイラー", "ブロイラー（外部）",
+]
+STEP0018_ITEM_NAMES = ["入雛羽数", "出荷羽数", "正味重量", "育成率", "平均体重"]
+STEP0018_TITLES = ["入雛羽数（羽）", "出荷羽数（羽）", "重量（kg）", "育成率", "体重（kg）"]
 
-    pszOutputTsvPath: str = os.path.abspath(sys.argv[1])
-    pszInputExcelPath: str = os.path.abspath(sys.argv[2])
+
+def normalize_step0018_label(objValue: Any) -> str:
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(objValue or "")))
+
+
+def parse_step0018_number(
+    objValue: Any, pszItem: str, pszLocation: str, bPlan: bool = True,
+) -> Optional[Decimal]:
+    if objValue is None or (isinstance(objValue, str) and not objValue.strip()):
+        return None
+    try:
+        if isinstance(objValue, bool):
+            raise ValueError("boolean is not a number")
+        pszText = unicodedata.normalize("NFKC", str(objValue)).strip().replace(",", "")
+        bPercent = pszText.endswith("%")
+        if bPercent and pszItem != "育成率":
+            raise ValueError("unexpected percent")
+        objNumber = Decimal(pszText[:-1] if bPercent else pszText)
+        if bPercent:
+            objNumber /= Decimal("100")
+        if not objNumber.is_finite() or objNumber < 0:
+            raise ValueError("number must be finite and nonnegative")
+        if pszItem in {"入雛羽数", "出荷羽数"} and objNumber != objNumber.to_integral_value():
+            raise ValueError("count must be integer")
+        if bPlan and pszItem == "育成率" and objNumber > 1:
+            raise ValueError("growth rate must be between 0 and 1")
+        return objNumber
+    except (ArithmeticError, ValueError):
+        raise_conversion_error("STEP0018_INVALID_NUMBER", pszLocation + ": " + str(objValue))
+
+
+def read_step0018_plan_excel(pszPath: str) -> Tuple[int, Dict[str, List[List[Optional[Decimal]]]], List[str]]:
+    """計画5表を検査し、年間重量だけを月別合計に補正します。入力は変更しません。"""
+    if not os.path.isfile(pszPath) or os.path.splitext(pszPath)[1].lower() not in SUPPORTED_EXTENSIONS:
+        raise_conversion_error("STEP0018_INVALID_PLAN_PATH", "計画Excelを読み込めません: " + pszPath)
+    objFormulaBook = None
+    objValueBook = None
+    try:
+        objFormulaBook = load_workbook(pszPath, data_only=False)
+        objValueBook = load_workbook(pszPath, data_only=True)
+        arrCandidates = []
+        for objSheet in objFormulaBook:
+            for arrRow in objSheet:
+                for objCell in arrRow:
+                    objMatch = re.fullmatch(r"([0-9]{4})年生鳥計画表", normalize_step0018_label(objCell.value))
+                    if objMatch:
+                        arrCandidates.append((objSheet, int(objMatch.group(1))))
+        if len(arrCandidates) != 1:
+            raise_conversion_error("STEP0018_AMBIGUOUS_PLAN", "年付きの生鳥計画表を一意に特定できません。")
+        objSheet, iYear = arrCandidates[0]
+        if not 1 <= iYear <= 9999:
+            raise_conversion_error("STEP0018_INVALID_PLAN_YEAR", str(iYear))
+        objValues = objValueBook[objSheet.title]
+        dicAliases = {
+            "入雛羽数(羽)": "入雛羽数", "出荷羽数(羽)": "出荷羽数",
+            "重量(kg)": "正味重量", "重量(t)": "正味重量",
+            "育成率": "育成率", "体重(kg)": "平均体重",
+        }
+        dicPlan = {}
+        arrWarnings = []
+        for arrRow in objSheet:
+            for objTitle in arrRow:
+                pszLabel = normalize_step0018_label(objTitle.value)
+                if pszLabel not in dicAliases:
+                    continue
+                pszItem = dicAliases[pszLabel]
+                if pszItem in dicPlan:
+                    raise_conversion_error("STEP0018_DUPLICATE_PLAN_TABLE", pszItem)
+                iTop, iLeft = objTitle.row, objTitle.column
+                pszLast = "平均" if pszItem in {"育成率", "平均体重"} else "合計"
+                arrExpected = ["計画"] + [f"{m}月" for m in range(1, 13)] + [pszLast]
+                if [normalize_step0018_label(objSheet.cell(iTop + 1, iLeft + c).value)
+                        for c in range(14)] != arrExpected:
+                    raise_conversion_error("STEP0018_INVALID_PLAN_HEADER", objSheet.title + "!" + objTitle.coordinate)
+                dicBreedRows = {}
+                arrNames = STEP0018_PLAN_NAMES + [pszLast]
+                for iRow in range(iTop + 2, iTop + 8):
+                    pszName = normalize_step0018_label(objSheet.cell(iRow, iLeft).value)
+                    if pszName not in [normalize_step0018_label(n) for n in arrNames] or pszName in dicBreedRows:
+                        raise_conversion_error("STEP0018_INVALID_PLAN_VARIETY", pszItem + ": " + pszName)
+                    arrNumbers = []
+                    for iCol in range(iLeft + 1, iLeft + 14):
+                        objFormula = objSheet.cell(iRow, iCol)
+                        objValue = objValues.cell(iRow, iCol).value
+                        pszLocation = objSheet.title + "!" + objFormula.coordinate
+                        if objFormula.data_type == "f" and objValue is None:
+                            raise_conversion_error("STEP0018_FORMULA_RESULT_UNAVAILABLE", pszLocation)
+                        arrNumbers.append(parse_step0018_number(objValue, pszItem, pszLocation))
+                    dicBreedRows[pszName] = arrNumbers
+                dicPlan[pszItem] = [dicBreedRows[normalize_step0018_label(n)] for n in arrNames]
+                if pszLabel == "重量(t)":
+                    arrWarnings.append("計画の重量見出しはtですが、今回の計画数値はkgとして使用します。単位換算はしません。")
+        if set(dicPlan) != set(STEP0018_ITEM_NAMES):
+            raise_conversion_error("STEP0018_PLAN_TABLE_MISSING", "必要な計画5表が揃っていません。")
+        for iBreed, arrValues in enumerate(dicPlan["正味重量"]):
+            objTotal = sum((v for v in arrValues[:12] if v is not None), Decimal("0"))
+            if arrValues[12] != objTotal:
+                pszName = (STEP0018_PLAN_NAMES + ["合計"])[iBreed]
+                arrWarnings.append(f"年間計画重量補正: {pszName}: {arrValues[12]} → {objTotal} kg")
+            arrValues[12] = objTotal
+        for pszItem in STEP0018_ITEM_NAMES[:3]:
+            for iMonth in range(12):
+                objSum = sum((row[iMonth] for row in dicPlan[pszItem][:5]
+                              if row[iMonth] is not None), Decimal("0"))
+                if dicPlan[pszItem][5][iMonth] != objSum:
+                    arrWarnings.append(f"計画の品種合計不一致: {pszItem} {iMonth + 1}月")
+        return iYear, dicPlan, arrWarnings
+    except ConversionError:
+        raise
+    except Exception as objException:
+        raise_conversion_error("STEP0018_PLAN_READ_FAILED", str(objException))
+    finally:
+        if objFormulaBook is not None:
+            objFormulaBook.close()
+        if objValueBook is not None:
+            objValueBook.close()
+
+
+def step0018_ratio(objNumerator: Optional[Decimal], objDenominator: Optional[Decimal]) -> Optional[Decimal]:
+    if objNumerator is None or objDenominator is None or objDenominator == 0:
+        return None
+    return objNumerator / objDenominator
+
+
+def read_step0018_actuals(
+    arrPaths: List[str], iYear: int, arrYearMonths: List[Tuple[int, int]],
+) -> Tuple[str, Dict[str, List[List[Optional[Decimal]]]], List[int]]:
+    arrMatching = []
+    for pszPath in arrPaths:
+        objMatch = re.fullmatch(r"(.+)_step0013_品種別_([0-9]{4})_年間(?:_[0-9]+)?\.tsv", os.path.basename(pszPath))
+        if objMatch and int(objMatch.group(2)) == iYear:
+            arrMatching.append(pszPath)
+    if len(arrMatching) != 1:
+        raise_conversion_error("STEP0018_ACTUAL_YEAR_MISMATCH", f"{iYear}年の通常版品種別TSVを一意に特定できません。")
+    arrMonths = sorted({m for y, m in arrYearMonths if y == iYear})
+    if not arrMonths or any(not 1 <= m <= 12 for m in arrMonths):
+        raise_conversion_error("STEP0018_ACTUAL_MONTHS_MISSING", str(iYear))
+    pszPath = arrMatching[0]
+    arrRows = read_step0013_variety_for_excel(pszPath)
+    dicActual = {item: [[None] * 13 for _ in range(6)] for item in STEP0018_ITEM_NAMES}
+    for iBreed in range(6):
+        iStart = 2 + iBreed * len(STEP0008_VARIETY_ITEM_NAMES)
+        for pszItem in STEP0018_ITEM_NAMES:
+            arrSource = arrRows[iStart + STEP0008_VARIETY_ITEM_NAMES.index(pszItem)]
+            for iMonth in arrMonths:
+                objValue = parse_step0018_number(arrSource[iMonth + 1], pszItem,
+                                                f"{pszPath}: {iBreed + 1}区分 {iMonth}月 {pszItem}", False)
+                if objValue is None and pszItem in STEP0018_ITEM_NAMES[:3]:
+                    raise_conversion_error("STEP0018_ACTUAL_VALUE_MISSING", f"{pszItem} {iMonth}月")
+                # 分母0の率・体重は、既存stepが0でも計算不能として空欄にします。
+                if pszItem in {"育成率", "平均体重"}:
+                    pszDenominator = "入雛羽数" if pszItem == "育成率" else "出荷羽数"
+                    if dicActual[pszDenominator][iBreed][iMonth - 1] == 0:
+                        objValue = None
+                dicActual[pszItem][iBreed][iMonth - 1] = objValue
+        for pszItem in STEP0018_ITEM_NAMES[:3]:
+            dicActual[pszItem][iBreed][12] = sum(
+                (dicActual[pszItem][iBreed][m - 1] for m in arrMonths), Decimal("0"))
+        dicActual["育成率"][iBreed][12] = step0018_ratio(
+            dicActual["出荷羽数"][iBreed][12], dicActual["入雛羽数"][iBreed][12])
+        dicActual["平均体重"][iBreed][12] = step0018_ratio(
+            dicActual["正味重量"][iBreed][12], dicActual["出荷羽数"][iBreed][12])
+    return pszPath, dicActual, arrMonths
+
+
+def create_step0018_rows(
+    iYear: int, dicPlan: Dict[str, List[List[Optional[Decimal]]]],
+    dicActual: Dict[str, List[List[Optional[Decimal]]]], arrMonths: List[int], arrWarnings: List[str],
+) -> List[List[str]]:
+    arrRows = [[f"{iYear}年生鳥 計画・実績対比表"] + [""] * 14, [""] * 15]
+
+    def warn(pszText: str) -> None:
+        if pszText not in arrWarnings:
+            arrWarnings.append(pszText)
+
+    def total(dicData: Dict[str, List[List[Optional[Decimal]]]], pszItem: str,
+              iBreed: int, arrPeriod: List[int]) -> Optional[Decimal]:
+        arrValues = [dicData[pszItem][iBreed][m - 1] for m in arrPeriod]
+        if any(v is None for v in arrValues):
+            return None
+        return sum((v for v in arrValues if v is not None), Decimal("0"))
+
+    def weighted(dicData: Dict[str, List[List[Optional[Decimal]]]], pszItem: str,
+                 arrPeriod: List[int]) -> Optional[Decimal]:
+        pszNum, pszDen = (("出荷羽数", "入雛羽数") if pszItem == "育成率"
+                          else ("正味重量", "出荷羽数"))
+        return step0018_ratio(total(dicData, pszNum, 5, arrPeriod),
+                              total(dicData, pszDen, 5, arrPeriod))
+
+    def display(objValue: Optional[Decimal], pszItem: str, bRatio: bool = False) -> str:
+        if objValue is None:
+            return ""
+        if bRatio or pszItem == "育成率":
+            return format((objValue * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP), ".2f") + "%"
+        if pszItem == "平均体重":
+            return format(objValue.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP), ".2f")
+        return format(objValue.quantize(Decimal("1"), rounding=ROUND_HALF_UP), ",.0f")
+
+    def cumulative(pszItem: str, bDifference: bool = False) -> List[str]:
+        arrValues = []
+        for iMonth in range(1, 13):
+            if iMonth not in arrMonths:
+                arrValues.append("")
+                continue
+            arrPeriod = list(range(1, iMonth + 1))
+            if any(m not in arrMonths for m in arrPeriod):
+                warn(f"実績の途中月が未集計のため{iMonth}月の累積比較は空欄です。")
+                arrValues.append("")
+                continue
+            if pszItem in {"育成率", "平均体重"}:
+                objPlan = weighted(dicPlan, pszItem, arrPeriod)
+                objActual = weighted(dicActual, pszItem, arrPeriod)
+            else:
+                objPlan = total(dicPlan, pszItem, 5, arrPeriod)
+                objActual = total(dicActual, pszItem, 5, arrPeriod)
+            if objPlan is None:
+                warn(f"累積計画不足: {pszItem} {iMonth}月")
+            objValue = ((objActual - objPlan if objActual is not None and objPlan is not None else None)
+                        if bDifference else step0018_ratio(objActual, objPlan))
+            arrValues.append(display(objValue, pszItem, not bDifference))
+        return ["", "累積"] + arrValues + [""]
+
+    for iItem, pszItem in enumerate(STEP0018_ITEM_NAMES):
+        bAverage = pszItem in {"育成率", "平均体重"}
+        arrRows.append([STEP0018_TITLES[iItem]] + [""] * 14)
+        arrKinds = ["計画", "実績"] + (["差引"] if pszItem in {"出荷羽数", "正味重量"} else []) + ["対比"]
+        for pszKind in arrKinds:
+            arrRows.append(["", pszKind] + [f"{m}月" for m in range(1, 13)] + ["平均" if bAverage else "合計"])
+            # 体重実績・対比の全体行は、見本の「合計」表記を維持します。
+            pszTotalLabel = "平均" if bAverage else "合計"
+            if pszItem == "平均体重" and pszKind != "計画":
+                pszTotalLabel = "合計"
+            for iBreed, pszBreed in enumerate(STEP0018_PLAN_NAMES + [pszTotalLabel]):
+                arrValues = []
+                for iColumn in range(13):
+                    objPlan = dicPlan[pszItem][iBreed][iColumn]
+                    objActual = dicActual[pszItem][iBreed][iColumn]
+                    if pszKind == "計画":
+                        objValue = objPlan
+                    elif pszKind == "実績":
+                        objValue = objActual
+                    else:
+                        if pszKind == "差引" and iColumn == 12:
+                            objPlan = total(dicPlan, pszItem, iBreed, arrMonths)
+                        if objPlan is None and objActual is not None:
+                            warn(f"計画不足で比較は空欄: {pszItem} {pszBreed} "
+                                 + (f"{iColumn + 1}月" if iColumn < 12 else "合計"))
+                        objValue = ((objActual - objPlan if objActual is not None and objPlan is not None else None)
+                                    if pszKind == "差引" else step0018_ratio(objActual, objPlan))
+                    arrValues.append(display(objValue, pszItem, pszKind == "対比"))
+                arrRows.append(["", pszBreed] + arrValues)
+            if pszKind == "差引" and pszItem == "正味重量":
+                arrRows.append(cumulative(pszItem, True))
+            if pszKind == "対比":
+                arrRows.append(cumulative(pszItem))
+            arrRows.append([""] * 15)
+        arrRows.append([""] * 15)
+    return arrRows[:-2]
+
+
+def create_step0018_file(
+    pszPlanPath: str, objPlan: Tuple[int, Dict[str, List[List[Optional[Decimal]]]], List[str]],
+    arrActualPaths: List[str], arrYearMonths: List[Tuple[int, int]],
+) -> str:
+    iYear, dicPlan, arrPlanWarnings = objPlan
+    pszActualPath, dicActual, arrMonths = read_step0018_actuals(arrActualPaths, iYear, arrYearMonths)
+    arrWarnings = arrPlanWarnings[:]
+    arrRows = create_step0018_rows(iYear, dicPlan, dicActual, arrMonths, arrWarnings)
+    objMatch = re.fullmatch(r"(.+)_step0013_品種別_[0-9]{4}_年間(?:_[0-9]+)?\.tsv", os.path.basename(pszActualPath))
+    pszStem = f"{objMatch.group(1)}_step0018_品種別_計画実績対比_{iYear:04d}_年間"
+    pszDirectory = os.path.dirname(pszActualPath)
+    pszOutputPath = os.path.join(pszDirectory, pszStem + ".tsv")
+    iSuffix = 2
+    while True:
+        try:
+            iDescriptor = os.open(pszOutputPath, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(iDescriptor)
+            break
+        except FileExistsError:
+            pszOutputPath = os.path.join(pszDirectory, f"{pszStem}_{iSuffix:02d}.tsv")
+            iSuffix += 1
+    pszTemporaryPath = ""
+    bCompleted = False
+    try:
+        iDescriptor, pszTemporaryPath = tempfile.mkstemp(prefix="group_shipment_step0018_", suffix=".tsv", dir=pszDirectory)
+        os.close(iDescriptor)
+        with open(pszTemporaryPath, "w", encoding="utf-8-sig", newline="") as objFile:
+            for arrRow in arrRows:
+                objFile.write("\t".join(arrRow) + "\r\n")
+        os.replace(pszTemporaryPath, pszOutputPath)
+        pszTemporaryPath = ""
+        bCompleted = True
+    finally:
+        if pszTemporaryPath and os.path.exists(pszTemporaryPath):
+            os.remove(pszTemporaryPath)
+        if not bCompleted and os.path.exists(pszOutputPath):
+            os.remove(pszOutputPath)
+    print("step0018計画Excel: " + pszPlanPath)
+    print("step0018実績TSV: " + pszActualPath)
+    print(f"step0018実績基準: 廃棄控除前、重量kg、対象年{iYear}、集計月=" + ",".join(map(str, arrMonths)))
+    print("step0018比較方法: 合計列の対比は年間進捗率、累積対比は同期間比較、率・体重の累積は加重計算")
+    for pszWarning in arrWarnings:
+        print("step0018警告: " + pszWarning)
+    print("step0018計画実績対比ファイル: " + pszOutputPath)
+    return pszOutputPath
+
+
+def main() -> int:
+    objParser = argparse.ArgumentParser(description="Excelの詳細データを集計します。")
+    objParser.add_argument("output_tsv_path")
+    objParser.add_argument("input_excel_path")
+    objParser.add_argument("--plan-excel", metavar="PATH", help="品種別計画・実績対比TSVを追加作成する計画Excel")
+    try:
+        objArgs = objParser.parse_args()
+    except SystemExit as objException:
+        return 0 if objException.code == 0 else 1
+    pszOutputTsvPath: str = os.path.abspath(objArgs.output_tsv_path)
+    pszInputExcelPath: str = os.path.abspath(objArgs.input_excel_path)
+    pszPlanExcelPath = os.path.abspath(objArgs.plan_excel) if objArgs.plan_excel is not None else ""
 
     try:
         validate_paths(pszOutputTsvPath, pszInputExcelPath)
+        objPlan = read_step0018_plan_excel(pszPlanExcelPath) if pszPlanExcelPath else None
         convert_excel_to_tsv(pszOutputTsvPath, pszInputExcelPath)
         (
             arrMonthlyTsvPaths,
@@ -19188,6 +19504,10 @@ def main() -> int:
         arrNamedGroupSummaryExcelPaths = create_group_summary_yearly_named_copies(
             arrStep0013GroupExcelPaths
         )
+        if objPlan is not None:
+            create_step0018_file(
+                pszPlanExcelPath, objPlan, arrStep0013VarietyPaths, arrStep0003VarietyYearMonths
+            )
     except Exception as objException:
         pszErrorCode: str = getattr(
             objException, "pszErrorCode", "UNEXPECTED_CONVERSION_ERROR"
