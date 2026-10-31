@@ -9021,7 +9021,9 @@ def apply_total_count_history_borders(pszExcelPath: str) -> None:
             os.remove(pszTemporaryPath)
 
 
-def create_total_count_history_named_copies(arrExcelPaths: List[str]) -> List[str]:
+def create_total_count_history_named_copies(
+    arrExcelPaths: List[str], objTargetYearMonth: Tuple[int, int]
+) -> List[str]:
     """作成済み出荷廃棄羽数過去05年Excelを別名でコピーします。"""
     arrCreatedPaths: List[str] = []
     try:
@@ -9044,6 +9046,7 @@ def create_total_count_history_named_copies(arrExcelPaths: List[str]) -> List[st
             shutil.copy2(pszExcelPath, pszOutputPath)
             arrCreatedPaths.append(pszOutputPath)
             apply_total_count_history_borders(pszOutputPath)
+            create_total_count_history_charts(pszOutputPath, objTargetYearMonth)
         return arrCreatedPaths
     except Exception:
         for pszPath in arrCreatedPaths:
@@ -9217,62 +9220,22 @@ def apply_discard_summary_monthly_borders(pszExcelPath: str) -> None:
             os.remove(pszTemporaryPath)
 
 
-def create_discard_summary_monthly_charts(pszExcelPath: str) -> None:
-    """総計の羽数を使った過去5年・8項目の編集可能なグラフを追加します。"""
-    arrItems = [
-        ("懸鳥前死鶏", 6), ("懸鳥前発育不良", 7),
-        ("マレック病", 9), ("大腸菌症", 10),
-        ("ブドウ球菌症", 11), ("敗血症", 12), ("変性", 13), ("腹水症", 14),
-    ]
+def write_discard_comparison_charts(
+    objWorkbook: Workbook,
+    arrItems: List[Tuple[str, int]],
+    dicValues: Dict[Tuple[int, int], List[Optional[float]]],
+    objTargetYearMonth: Tuple[int, int],
+    pszMarker: str,
+    pszExcelPath: str,
+) -> None:
+    """共通の配色・軸ラベル・欠損処理でグラフシートを作成し、同じExcelへ保存します。"""
     arrStyles = [
         ("000080", "diamond"), ("FF00FF", "square"), ("FFFF00", "triangle"),
         ("FFA500", "x"), ("5B9BD5", "star"),
     ]
-    pszMarker = "group_shipment_summary_discard_charts_v1"
-    objWorkbook = load_workbook(pszExcelPath)
+    iLatestYear, iLatestMonth = objTargetYearMonth
     pszTemporaryPath = ""
     try:
-        objSource = objWorkbook["総計"]
-        arrExpectedHeaders = [
-            "死鶏", "発育不良", "マレック", "大腸菌症", "ブドウ球菌症", "敗血症", "変性", "腹水症"
-        ]
-        if [objSource.cell(2, col).value for _, col in arrItems] != arrExpectedHeaders:
-            raise_conversion_error("INVALID_DISCARD_CHART_HEADERS", pszExcelPath)
-        dicValues: Dict[Tuple[int, int], List[Optional[float]]] = {}
-        for iRow in range(3, objSource.max_row + 1):
-            if objSource.cell(iRow, 5).value != "羽数":
-                continue
-            try:
-                objKey = parse_year_month(
-                    str(objSource.cell(iRow, 1).value),
-                    str(objSource.cell(iRow, 2).value), iRow,
-                )
-                if objKey in dicValues:
-                    raise ValueError("duplicate year/month")
-                arrValues: List[Optional[float]] = []
-                for pszTitle, iColumn in arrItems:
-                    objValue = objSource.cell(iRow, iColumn).value
-                    objNumber = parse_decimal_value(
-                        "" if objValue is None else str(objValue).replace(",", ""),
-                        iRow, iColumn, pszTitle,
-                    )
-                    arrValues.append(float(objNumber) if objNumber is not None else None)
-                dicValues[objKey] = arrValues
-            except (ConversionError, ValueError) as objException:
-                raise_conversion_error(
-                    "INVALID_DISCARD_CHART_DATA",
-                    f"Path = {pszExcelPath}; Sheet = 総計; Row = {iRow}; Detail = {objException}",
-                )
-        if not dicValues:
-            raise_conversion_error("DISCARD_CHART_DATA_MISSING", pszExcelPath)
-        objMatch = re.fullmatch(
-            r"〇廃棄データ月別一覧表～(\d{4})年(\d{2})月(?:_\d+)*\.xlsx",
-            os.path.basename(pszExcelPath),
-        )
-        iLatestYear, iLatestMonth = (
-            parse_year_month(objMatch.group(1), objMatch.group(2), 1)
-            if objMatch is not None else max(dicValues)
-        )
         iSheetIndex = len(objWorkbook.worksheets)
         if "グラフ" in objWorkbook.sheetnames:
             objExisting = objWorkbook["グラフ"]
@@ -9283,7 +9246,7 @@ def create_discard_summary_monthly_charts(pszExcelPath: str) -> None:
             bOwned = bOwned and all(
                 not cell.comment and not cell.hyperlink and not cell.has_style
                 and (cell.value is None or cell.coordinate == "AA1" or (
-                    27 <= cell.column <= 32 and 3 <= cell.row <= 120
+                    27 <= cell.column <= 32 and 3 <= cell.row <= len(arrItems) * 15
                     and (cell.row - 3) % 15 <= 12
                 ))
                 for cell in objExisting._cells.values()
@@ -9311,7 +9274,7 @@ def create_discard_summary_monthly_charts(pszExcelPath: str) -> None:
         objSheet["AA1"] = pszMarker
         for iColumn in range(1, 21):
             objSheet.column_dimensions[get_column_letter(iColumn)].width = 9
-        for iRow in range(1, 81):
+        for iRow in range(1, ((len(arrItems) + 1) // 2) * 20 + 1):
             objSheet.row_dimensions[iRow].height = 16
         for iColumn in range(27, 33):
             objSheet.column_dimensions[get_column_letter(iColumn)].hidden = True
@@ -9428,6 +9391,126 @@ def create_discard_summary_monthly_charts(pszExcelPath: str) -> None:
         objWorkbook.close()
         if pszTemporaryPath and os.path.exists(pszTemporaryPath):
             os.remove(pszTemporaryPath)
+
+
+
+def create_discard_summary_monthly_charts(pszExcelPath: str) -> None:
+    """総計の羽数を使った過去5年・8項目の編集可能なグラフを追加します。"""
+    arrItems = [
+        ("懸鳥前死鶏", 6), ("懸鳥前発育不良", 7),
+        ("マレック病", 9), ("大腸菌症", 10),
+        ("ブドウ球菌症", 11), ("敗血症", 12), ("変性", 13), ("腹水症", 14),
+    ]
+    pszMarker = "group_shipment_summary_discard_charts_v1"
+    objWorkbook = load_workbook(pszExcelPath)
+    try:
+        objSource = objWorkbook["総計"]
+        arrExpectedHeaders = [
+            "死鶏", "発育不良", "マレック", "大腸菌症", "ブドウ球菌症", "敗血症", "変性", "腹水症"
+        ]
+        if [objSource.cell(2, col).value for _, col in arrItems] != arrExpectedHeaders:
+            raise_conversion_error("INVALID_DISCARD_CHART_HEADERS", pszExcelPath)
+        dicValues: Dict[Tuple[int, int], List[Optional[float]]] = {}
+        for iRow in range(3, objSource.max_row + 1):
+            if objSource.cell(iRow, 5).value != "羽数":
+                continue
+            try:
+                objKey = parse_year_month(
+                    str(objSource.cell(iRow, 1).value),
+                    str(objSource.cell(iRow, 2).value), iRow,
+                )
+                if objKey in dicValues:
+                    raise ValueError("duplicate year/month")
+                arrValues: List[Optional[float]] = []
+                for pszTitle, iColumn in arrItems:
+                    objValue = objSource.cell(iRow, iColumn).value
+                    objNumber = parse_decimal_value(
+                        "" if objValue is None else str(objValue).replace(",", ""),
+                        iRow, iColumn, pszTitle,
+                    )
+                    arrValues.append(float(objNumber) if objNumber is not None else None)
+                dicValues[objKey] = arrValues
+            except (ConversionError, ValueError) as objException:
+                raise_conversion_error(
+                    "INVALID_DISCARD_CHART_DATA",
+                    f"Path = {pszExcelPath}; Sheet = 総計; Row = {iRow}; Detail = {objException}",
+                )
+        if not dicValues:
+            raise_conversion_error("DISCARD_CHART_DATA_MISSING", pszExcelPath)
+        objMatch = re.fullmatch(
+            r"〇廃棄データ月別一覧表～(\d{4})年(\d{2})月(?:_\d+)*\.xlsx",
+            os.path.basename(pszExcelPath),
+        )
+        iLatestYear, iLatestMonth = (
+            parse_year_month(objMatch.group(1), objMatch.group(2), 1)
+            if objMatch is not None else max(dicValues)
+        )
+        write_discard_comparison_charts(
+            objWorkbook, arrItems, dicValues, (iLatestYear, iLatestMonth),
+            pszMarker, pszExcelPath,
+        )
+    finally:
+        objWorkbook.close()
+
+
+
+def create_total_count_history_charts(
+    pszExcelPath: str, objTargetYearMonth: Tuple[int, int]
+) -> None:
+    """総計羽数過去5年の15表を、対象年月までの月別比較グラフにします。"""
+    iLatestYear, iLatestMonth = parse_year_month(
+        str(objTargetYearMonth[0]), str(objTargetYearMonth[1]), 1
+    )
+    objWorkbook = load_workbook(pszExcelPath)
+    try:
+        objSource = objWorkbook["総計羽数過去5年"]
+        arrItems = [
+            ("マレック病" if name == "マレック羽数" else name[:-2], index)
+            for index, name in enumerate(STEP0004_TOTAL_COUNT_ITEMS)
+        ]
+        dicValues: Dict[Tuple[int, int], List[Optional[float]]] = {}
+        for iIndex, pszItem in enumerate(STEP0004_TOTAL_COUNT_ITEMS):
+            iTitleRow = 1 + iIndex * 8
+            if (objSource.cell(iTitleRow, 1).value != pszItem
+                    or [objSource.cell(iTitleRow + 1, col).value for col in range(2, 14)]
+                    != [f"{month}月" for month in range(1, 13)]):
+                raise_conversion_error(
+                    "INVALID_TOTAL_COUNT_HISTORY_CHART_HEADER",
+                    f"Path = {pszExcelPath}; Item = {pszItem}; Row = {iTitleRow}",
+                )
+            for iYearIndex in range(5):
+                iRow = iTitleRow + 2 + iYearIndex
+                pszYear = str(objSource.cell(iRow, 1).value)
+                if pszYear.endswith("年"):
+                    pszYear = pszYear[:-1]
+                if pszYear != str(iLatestYear - iYearIndex):
+                    raise_conversion_error(
+                        "INVALID_TOTAL_COUNT_HISTORY_CHART_YEAR",
+                        f"Path = {pszExcelPath}; Item = {pszItem}; Row = {iRow}; "
+                        f"Expected year = {iLatestYear - iYearIndex}",
+                    )
+                for iMonth in range(1, 13):
+                    objKey = (iLatestYear - iYearIndex, iMonth)
+                    arrValues = dicValues.setdefault(objKey, [None] * len(arrItems))
+                    objValue = objSource.cell(iRow, iMonth + 1).value
+                    try:
+                        objNumber = parse_decimal_value(
+                            "" if objValue is None else str(objValue).replace(",", ""),
+                            iRow, iMonth + 1, pszItem,
+                        )
+                    except ConversionError as objException:
+                        raise_conversion_error(
+                            "INVALID_TOTAL_COUNT_HISTORY_CHART_VALUE",
+                            f"Path = {pszExcelPath}; Item = {pszItem}; Row = {iRow}; "
+                            f"Month = {iMonth}; Detail = {objException}",
+                        )
+                    arrValues[iIndex] = float(objNumber) if objNumber is not None else None
+        write_discard_comparison_charts(
+            objWorkbook, arrItems, dicValues, (iLatestYear, iLatestMonth),
+            "group_shipment_summary_total_count_history_charts_v1", pszExcelPath,
+        )
+    finally:
+        objWorkbook.close()
 
 
 def create_discard_summary_monthly_named_copies(
@@ -18901,7 +18984,7 @@ def main() -> int:
             )
         )
         arrNamedTotalCountHistoryExcelPaths = create_total_count_history_named_copies(
-            arrStep0005TotalCountHistoryExcelPaths
+            arrStep0005TotalCountHistoryExcelPaths, objLastYearMonth
         )
         arrStep0004GroupDiscardCountPaths = create_step0004_group_discard_count_files(
             arrStep0003Paths, arrStep0003YearMonths
