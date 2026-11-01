@@ -4,6 +4,7 @@
 import argparse
 import calendar
 import csv
+from copy import copy
 import os
 import re
 import shutil
@@ -26,7 +27,7 @@ from openpyxl.drawing.text import (
     CharacterProperties, Font as DrawingFont, Paragraph, ParagraphProperties,
     RichTextProperties,
 )
-from openpyxl.styles import Border, Color, Side
+from openpyxl.styles import Border, Color, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 
@@ -18758,6 +18759,21 @@ STEP0018_PLAN_NAMES = [
 ]
 STEP0018_ITEM_NAMES = ["入雛羽数", "出荷羽数", "正味重量", "育成率", "平均体重"]
 STEP0018_TITLES = ["入雛羽数", "出荷羽数", "重量(kg)", "育成率", "体重（kg）"]
+STEP0018_REFERENCE_STYLE_ROW_IDS = (
+    "01123444561278889612344456611123444561278889612344456123444566111234445612788896123444566123444566111234445612344456123444566111234445612344456123444566"
+)
+STEP0018_REFERENCE_STYLE_PATTERNS = (
+    "-----B|------|------|------|------|------|------|------|------|------|------|------|------|------",
+    "------|------|------|------|------|------|------|------|------|------|------|------|------|------",
+    "ttttYB|thtt--|hhtt--|hhtt--|hhtt--|hhtt--|hhtt--|hhtt--|hhtt--|hhtt--|hhtt--|hhtt--|hhtt--|tttt--",
+    "ttth--|thth--|hhth--|hhth--|hhth--|hhth--|hhth--|hhth--|hhth--|hhth--|hhth--|hhth--|htth--|ttth--",
+    "tthh--|thhh--|hhhh--|hhhh--|hhhh--|hhhh--|hhhh--|hhhh--|hhhh--|hhhh--|hhhh--|hhhh--|hthh--|tthh--",
+    "ttht--|thht--|hhht--|hhht--|hhht--|hhht--|hhht--|hhht--|hhht--|hhht--|hhht--|hhht--|htht--|ttht--",
+    "tttt--|thtt--|hhtt--|hhtt--|hhtt--|hhtt--|hhtt--|hhtt--|hhtt--|hhtt--|hhtt--|hhtt--|httt--|tttt--",
+    "ttth--|thth--|thth--|thth--|thth--|thth--|thth--|thth--|thth--|thth--|thth--|thth--|thth--|ttth--",
+    "tthh--|thth--|thth--|thth--|thth--|thth--|thth--|thth--|thth--|thth--|thth--|thth--|thth--|tthh--",
+    "ttht--|thth--|thth--|thth--|thth--|thth--|thth--|thth--|thth--|thth--|thth--|thth--|thth--|ttht--",
+)
 
 
 def normalize_step0018_label(objValue: Any) -> str:
@@ -19168,6 +19184,77 @@ def create_step0018_named_excel_copy(pszSourceExcelPath: str) -> str:
             os.remove(pszOutputPath)
 
 
+def apply_step0018_reference_formatting(pszWorkbookPath: str) -> None:
+    """添付の罫線あり見本から取り込んだ書式を年別Excelへ適用します。"""
+    if len(STEP0018_REFERENCE_STYLE_ROW_IDS) != 152:
+        raise_conversion_error("STEP0018_REFERENCE_STYLE_INVALID", "行書式定義の行数が不正です。")
+    arrPatterns = [pszPattern.split("|") for pszPattern in STEP0018_REFERENCE_STYLE_PATTERNS]
+    if any(len(arrPattern) != 14 or any(len(pszStyle) != 6 for pszStyle in arrPattern)
+           for arrPattern in arrPatterns):
+        raise_conversion_error("STEP0018_REFERENCE_STYLE_INVALID", "セル書式定義が不正です。")
+
+    objWorkbook: Optional[Workbook] = None
+    pszTemporaryPath = ""
+    try:
+        objWorkbook = load_workbook(pszWorkbookPath)
+        if "計画実績対比" not in objWorkbook.sheetnames:
+            raise_conversion_error("STEP0018_REFERENCE_SHEET_MISSING", pszWorkbookPath)
+        objWorksheet = objWorkbook["計画実績対比"]
+        if objWorksheet.max_row != 152 or objWorksheet.max_column != 14:
+            raise_conversion_error(
+                "STEP0018_REFERENCE_LAYOUT_MISMATCH",
+                f"計画実績対比の形式が見本と異なります: {objWorksheet.max_row}行×{objWorksheet.max_column}列",
+            )
+
+        dicSideStyles = {
+            "-": Side(),
+            "t": Side(style="thin", color=Color(indexed=64)),
+            "h": Side(style="hair", color=Color(indexed=64)),
+        }
+        for iRow, pszPatternId in enumerate(STEP0018_REFERENCE_STYLE_ROW_IDS, start=1):
+            arrCellStyles = arrPatterns[int(pszPatternId)]
+            for iColumn, pszStyle in enumerate(arrCellStyles, start=1):
+                objCell = objWorksheet.cell(iRow, iColumn)
+                pszLeft, pszRight, pszTop, pszBottom, pszFill, pszBold = pszStyle
+                objCell.border = Border(
+                    left=dicSideStyles[pszLeft],
+                    right=dicSideStyles[pszRight],
+                    top=dicSideStyles[pszTop],
+                    bottom=dicSideStyles[pszBottom],
+                    diagonal=Side(),
+                )
+                objCell.fill = (
+                    PatternFill(fill_type="solid", fgColor=Color(indexed=13))
+                    if pszFill == "Y" else PatternFill(fill_type=None)
+                )
+                objFont = copy(objCell.font)
+                objFont.bold = pszBold == "B"
+                objCell.font = objFont
+
+        iDescriptor, pszTemporaryPath = tempfile.mkstemp(
+            prefix="group_shipment_step0018_styled_", suffix=".xlsx",
+            dir=os.path.dirname(os.path.abspath(pszWorkbookPath)),
+        )
+        os.close(iDescriptor)
+        objWorkbook.save(pszTemporaryPath)
+        objWorkbook.close()
+        objWorkbook = None
+        os.replace(pszTemporaryPath, pszWorkbookPath)
+        pszTemporaryPath = ""
+    except ConversionError:
+        raise
+    except Exception as objException:
+        raise_conversion_error(
+            "STEP0018_REFERENCE_STYLE_APPLY_FAILED",
+            "見本の罫線・塗りつぶし・太字を適用できません: " + str(objException),
+        )
+    finally:
+        if objWorkbook is not None:
+            objWorkbook.close()
+        if pszTemporaryPath and os.path.exists(pszTemporaryPath):
+            os.remove(pszTemporaryPath)
+
+
 def create_step0018_file(
     pszPlanPath: str, objPlan: Tuple[int, Dict[str, List[List[Optional[Decimal]]]], List[str]],
     arrActualPaths: List[str], arrYearMonths: List[Tuple[int, int]],
@@ -19207,6 +19294,7 @@ def create_step0018_file(
             os.remove(pszOutputPath)
     pszExcelPath = create_step0018_excel_file(pszOutputPath)
     pszNamedExcelPath = create_step0018_named_excel_copy(pszExcelPath)
+    apply_step0018_reference_formatting(pszNamedExcelPath)
     print("step0018計画Excel: " + pszPlanPath)
     print("step0018実績TSV: " + pszActualPath)
     print(f"step0018実績基準: 廃棄控除前、重量kg、対象年{iYear}、集計月=" + ",".join(map(str, arrMonths)))
