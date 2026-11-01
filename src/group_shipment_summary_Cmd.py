@@ -18757,7 +18757,7 @@ STEP0018_PLAN_NAMES = [
     "阿波尾鶏", "赤どり", "地養鳥", "ブロイラー", "ブロイラー（外部）",
 ]
 STEP0018_ITEM_NAMES = ["入雛羽数", "出荷羽数", "正味重量", "育成率", "平均体重"]
-STEP0018_TITLES = ["入雛羽数（羽）", "出荷羽数（羽）", "重量（kg）", "育成率", "体重（kg）"]
+STEP0018_TITLES = ["入雛羽数", "出荷羽数", "重量(kg)", "育成率", "体重（kg）"]
 
 
 def normalize_step0018_label(objValue: Any) -> str:
@@ -18928,7 +18928,7 @@ def create_step0018_rows(
     iYear: int, dicPlan: Dict[str, List[List[Optional[Decimal]]]],
     dicActual: Dict[str, List[List[Optional[Decimal]]]], arrMonths: List[int], arrWarnings: List[str],
 ) -> List[List[str]]:
-    arrRows = [[f"{iYear}年生鳥 計画・実績対比表"] + [""] * 14, [""] * 15]
+    arrRows = [[f"{iYear}年生鳥 計画・実績対比表"] + [""] * 13, [""] * 14]
 
     def warn(pszText: str) -> None:
         if pszText not in arrWarnings:
@@ -18979,14 +18979,14 @@ def create_step0018_rows(
             objValue = ((objActual - objPlan if objActual is not None and objPlan is not None else None)
                         if bDifference else step0018_ratio(objActual, objPlan))
             arrValues.append(display(objValue, pszItem, not bDifference))
-        return ["", "累積"] + arrValues + [""]
+        return ["累積"] + arrValues + [""]
 
     for iItem, pszItem in enumerate(STEP0018_ITEM_NAMES):
         bAverage = pszItem in {"育成率", "平均体重"}
-        arrRows.append([STEP0018_TITLES[iItem]] + [""] * 14)
+        arrRows.append([STEP0018_TITLES[iItem]] + [""] * 13)
         arrKinds = ["計画", "実績"] + (["差引"] if pszItem in {"出荷羽数", "正味重量"} else []) + ["対比"]
         for pszKind in arrKinds:
-            arrRows.append(["", pszKind] + [f"{m}月" for m in range(1, 13)] + ["平均" if bAverage else "合計"])
+            arrRows.append([pszKind] + [f"{m}月" for m in range(1, 13)] + ["平均" if bAverage else "合計"])
             # 体重実績・対比の全体行は、見本の「合計」表記を維持します。
             pszTotalLabel = "平均" if bAverage else "合計"
             if pszItem == "平均体重" and pszKind != "計画":
@@ -19009,13 +19009,13 @@ def create_step0018_rows(
                         objValue = ((objActual - objPlan if objActual is not None and objPlan is not None else None)
                                     if pszKind == "差引" else step0018_ratio(objActual, objPlan))
                     arrValues.append(display(objValue, pszItem, pszKind == "対比"))
-                arrRows.append(["", pszBreed] + arrValues)
+                arrRows.append([pszBreed] + arrValues)
             if pszKind == "差引" and pszItem == "正味重量":
                 arrRows.append(cumulative(pszItem, True))
             if pszKind == "対比":
                 arrRows.append(cumulative(pszItem))
-            arrRows.append([""] * 15)
-        arrRows.append([""] * 15)
+            arrRows.append([""] * 14)
+        arrRows.append([""] * 14)
     return arrRows[:-2]
 
 
