@@ -19019,6 +19019,100 @@ def create_step0018_rows(
     return arrRows[:-2]
 
 
+def step0018_excel_value(pszValue: str) -> Tuple[Any, str]:
+    """TSV表示値をExcelの数値セルに変換し、表示形式を返します。"""
+    pszText = pszValue.strip()
+    if not pszText:
+        return None, "General"
+    if pszText.endswith("%"):
+        try:
+            objValue = Decimal(pszText[:-1].replace(",", "")) / Decimal("100")
+            if objValue.is_finite():
+                return float(objValue), "0.00%"
+        except (ArithmeticError, ValueError):
+            pass
+    try:
+        objValue = Decimal(pszText.replace(",", ""))
+        if objValue.is_finite():
+            if objValue == objValue.to_integral_value():
+                return int(objValue), "#,##0;[Red]-#,##0"
+            iDecimalPlaces = max(0, -objValue.as_tuple().exponent)
+            pszDecimals = "0" * iDecimalPlaces
+            return float(objValue), "#,##0." + pszDecimals
+    except (ArithmeticError, ValueError):
+        pass
+    return pszValue, "General"
+
+
+def create_step0018_excel_file(pszTsvPath: str) -> str:
+    """step0018 TSVを読み込み、同じ内容のExcelブックを作成します。"""
+    pszDirectory = os.path.dirname(os.path.abspath(pszTsvPath))
+    pszStem = os.path.splitext(os.path.basename(pszTsvPath))[0]
+    iSuffix = 1
+    while True:
+        pszName = pszStem + ("" if iSuffix == 1 else f"_{iSuffix:02d}") + ".xlsx"
+        pszOutputPath = os.path.join(pszDirectory, pszName)
+        try:
+            iDescriptor = os.open(pszOutputPath, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(iDescriptor)
+            break
+        except FileExistsError:
+            iSuffix += 1
+        except OSError as objException:
+            raise_conversion_error("STEP0018_EXCEL_CREATE_FAILED", str(objException))
+
+    pszTemporaryPath = ""
+    bOutputReserved = True
+    objWorkbook: Optional[Workbook] = None
+    try:
+        try:
+            iDescriptor, pszTemporaryPath = tempfile.mkstemp(
+                prefix="group_shipment_step0018_", suffix=".xlsx", dir=pszDirectory
+            )
+            os.close(iDescriptor)
+            objWorkbook = Workbook()
+            objWorksheet = objWorkbook.active
+            objWorksheet.title = "計画実績対比"
+            arrColumnWidths: List[int] = []
+            with open(pszTsvPath, "r", encoding="utf-8-sig", newline="") as objFile:
+                for iRow, arrValues in enumerate(csv.reader(objFile, delimiter="\t"), start=1):
+                    for iColumn, pszValue in enumerate(arrValues, start=1):
+                        while len(arrColumnWidths) < iColumn:
+                            arrColumnWidths.append(0)
+                        iDisplayWidth = sum(
+                            2 if unicodedata.east_asian_width(ch) in {"F", "W"} else 1
+                            for ch in pszValue
+                        )
+                        arrColumnWidths[iColumn - 1] = max(
+                            arrColumnWidths[iColumn - 1], iDisplayWidth
+                        )
+                        objValue, pszNumberFormat = step0018_excel_value(pszValue)
+                        objCell = objWorksheet.cell(iRow, iColumn, objValue)
+                        objCell.number_format = pszNumberFormat
+            for iColumn, iWidth in enumerate(arrColumnWidths, start=1):
+                objWorksheet.column_dimensions[get_column_letter(iColumn)].width = min(
+                    max(iWidth + 2, 8), 255
+                )
+            objWorkbook.save(pszTemporaryPath)
+            objWorkbook.close()
+            objWorkbook = None
+            os.replace(pszTemporaryPath, pszOutputPath)
+            pszTemporaryPath = ""
+            bOutputReserved = False
+            return pszOutputPath
+        except Exception as objException:
+            raise_conversion_error(
+                "STEP0018_EXCEL_WRITE_FAILED", "TSVからExcelを作成できません: " + str(objException)
+            )
+    finally:
+        if objWorkbook is not None:
+            objWorkbook.close()
+        if pszTemporaryPath and os.path.exists(pszTemporaryPath):
+            os.remove(pszTemporaryPath)
+        if bOutputReserved and os.path.exists(pszOutputPath):
+            os.remove(pszOutputPath)
+
+
 def create_step0018_file(
     pszPlanPath: str, objPlan: Tuple[int, Dict[str, List[List[Optional[Decimal]]]], List[str]],
     arrActualPaths: List[str], arrYearMonths: List[Tuple[int, int]],
@@ -19056,6 +19150,7 @@ def create_step0018_file(
             os.remove(pszTemporaryPath)
         if not bCompleted and os.path.exists(pszOutputPath):
             os.remove(pszOutputPath)
+    pszExcelPath = create_step0018_excel_file(pszOutputPath)
     print("step0018計画Excel: " + pszPlanPath)
     print("step0018実績TSV: " + pszActualPath)
     print(f"step0018実績基準: 廃棄控除前、重量kg、対象年{iYear}、集計月=" + ",".join(map(str, arrMonths)))
@@ -19063,6 +19158,7 @@ def create_step0018_file(
     for pszWarning in arrWarnings:
         print("step0018警告: " + pszWarning)
     print("step0018計画実績対比ファイル: " + pszOutputPath)
+    print("step0018計画実績対比Excel: " + pszExcelPath)
     return pszOutputPath
 
 
