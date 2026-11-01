@@ -19113,6 +19113,61 @@ def create_step0018_excel_file(pszTsvPath: str) -> str:
             os.remove(pszOutputPath)
 
 
+def create_step0018_named_excel_copy(pszSourceExcelPath: str) -> str:
+    """詳細名step0018 Excelを読み込み、年別の品種別名でも保存します。"""
+    objMatch = re.fullmatch(
+        r".+_step0018_品種別_計画実績対比_([0-9]{4})_年間(?:_[0-9]+)?\.xlsx",
+        os.path.basename(pszSourceExcelPath),
+    )
+    if objMatch is None:
+        raise_conversion_error("STEP0018_NAMED_EXCEL_INVALID_SOURCE", pszSourceExcelPath)
+    iYear = int(objMatch.group(1))
+    pszDirectory = os.path.dirname(os.path.abspath(pszSourceExcelPath))
+    pszStem = f"〇品種別_計画実績対比_{iYear:04d}_年間"
+    iSuffix = 1
+    while True:
+        pszName = pszStem + ("" if iSuffix == 1 else f"_{iSuffix:02d}") + ".xlsx"
+        pszOutputPath = os.path.join(pszDirectory, pszName)
+        try:
+            iDescriptor = os.open(pszOutputPath, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(iDescriptor)
+            break
+        except FileExistsError:
+            iSuffix += 1
+        except OSError as objException:
+            raise_conversion_error("STEP0018_NAMED_EXCEL_CREATE_FAILED", str(objException))
+
+    pszTemporaryPath = ""
+    bOutputReserved = True
+    objWorkbook: Optional[Workbook] = None
+    try:
+        try:
+            iDescriptor, pszTemporaryPath = tempfile.mkstemp(
+                prefix="group_shipment_step0018_named_", suffix=".xlsx", dir=pszDirectory
+            )
+            os.close(iDescriptor)
+            objWorkbook = load_workbook(pszSourceExcelPath)
+            objWorkbook.save(pszTemporaryPath)
+            objWorkbook.close()
+            objWorkbook = None
+            os.replace(pszTemporaryPath, pszOutputPath)
+            pszTemporaryPath = ""
+            bOutputReserved = False
+            return pszOutputPath
+        except Exception as objException:
+            raise_conversion_error(
+                "STEP0018_NAMED_EXCEL_WRITE_FAILED",
+                "step0018 Excel別名ファイルを作成できません: " + str(objException),
+            )
+    finally:
+        if objWorkbook is not None:
+            objWorkbook.close()
+        if pszTemporaryPath and os.path.exists(pszTemporaryPath):
+            os.remove(pszTemporaryPath)
+        if bOutputReserved and os.path.exists(pszOutputPath):
+            os.remove(pszOutputPath)
+
+
 def create_step0018_file(
     pszPlanPath: str, objPlan: Tuple[int, Dict[str, List[List[Optional[Decimal]]]], List[str]],
     arrActualPaths: List[str], arrYearMonths: List[Tuple[int, int]],
@@ -19151,6 +19206,7 @@ def create_step0018_file(
         if not bCompleted and os.path.exists(pszOutputPath):
             os.remove(pszOutputPath)
     pszExcelPath = create_step0018_excel_file(pszOutputPath)
+    pszNamedExcelPath = create_step0018_named_excel_copy(pszExcelPath)
     print("step0018計画Excel: " + pszPlanPath)
     print("step0018実績TSV: " + pszActualPath)
     print(f"step0018実績基準: 廃棄控除前、重量kg、対象年{iYear}、集計月=" + ",".join(map(str, arrMonths)))
@@ -19159,6 +19215,7 @@ def create_step0018_file(
         print("step0018警告: " + pszWarning)
     print("step0018計画実績対比ファイル: " + pszOutputPath)
     print("step0018計画実績対比Excel: " + pszExcelPath)
+    print("step0018品種別計画実績対比Excel: " + pszNamedExcelPath)
     return pszOutputPath
 
 
