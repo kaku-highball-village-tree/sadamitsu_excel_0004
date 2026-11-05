@@ -19132,14 +19132,15 @@ def create_step0018_excel_file(pszTsvPath: str) -> str:
 def create_step0018_named_excel_copy(pszSourceExcelPath: str) -> str:
     """詳細名step0018 Excelを読み込み、年別の品種別名でも保存します。"""
     objMatch = re.fullmatch(
-        r".+_step0018_品種別_計画実績対比_([0-9]{4})_年間(?:_[0-9]+)?\.xlsx",
+        r".+_step0018_品種別_(?:処理_)?計画実績対比_([0-9]{4})_年間(?:_[0-9]+)?\.xlsx",
         os.path.basename(pszSourceExcelPath),
     )
     if objMatch is None:
         raise_conversion_error("STEP0018_NAMED_EXCEL_INVALID_SOURCE", pszSourceExcelPath)
     iYear = int(objMatch.group(1))
     pszDirectory = os.path.dirname(os.path.abspath(pszSourceExcelPath))
-    pszStem = f"〇品種別_計画実績対比_{iYear:04d}_年間"
+    bProcessing = "_品種別_処理_計画実績対比_" in os.path.basename(pszSourceExcelPath)
+    pszStem = f"〇品種別_{'処理_' if bProcessing else ''}計画実績対比_{iYear:04d}_年間"
     iSuffix = 1
     while True:
         pszName = pszStem + ("" if iSuffix == 1 else f"_{iSuffix:02d}") + ".xlsx"
@@ -19412,6 +19413,194 @@ def create_step0018_files(
         print("step0018警告ファイル: " + pszWarningPath)
     if not arrCreatedPaths:
         print("step0018計画実績対比ファイル: 0件")
+    return arrCreatedPaths
+
+
+def read_step0018_processing_actuals(
+    arrPaths: List[str], iYear: int, arrYearMonths: List[Tuple[int, int]],
+) -> Tuple[str, Dict[str, List[List[Optional[Decimal]]]], List[int]]:
+    """控除廃棄版step0013から処理羽数・処理重量を読み込みます。"""
+    arrMatching = []
+    for pszPath in arrPaths:
+        objMatch = re.fullmatch(
+            r"(.+)_step0013_品種別_控除廃棄_([0-9]{4})_年間(?:_[0-9]+)?\.tsv",
+            os.path.basename(pszPath),
+        )
+        if objMatch and int(objMatch.group(2)) == iYear:
+            arrMatching.append(pszPath)
+    if len(arrMatching) != 1:
+        raise_conversion_error(
+            "STEP0018_PROCESSING_ACTUAL_YEAR_MISMATCH",
+            f"{iYear}年の控除廃棄版品種別TSVを一意に特定できません。",
+        )
+    arrMonths = sorted({m for y, m in arrYearMonths if y == iYear})
+    if not arrMonths or any(not 1 <= m <= 12 for m in arrMonths):
+        raise_conversion_error("STEP0018_PROCESSING_MONTHS_MISSING", str(iYear))
+    pszPath = arrMatching[0]
+    arrRows = read_step0013_variety_deduction_for_excel(pszPath)
+    arrSourceItems = STEP0008_VARIETY_DEDUCTION_ITEM_NAMES
+    dicSourceItem = {pszName: i for i, pszName in enumerate(arrSourceItems)}
+    dicSourceTarget = {
+        "入雛羽数": "入雛羽数", "処理羽数": "出荷羽数", "処理重量": "正味重量",
+    }
+    dicActual = {item: [[None] * 13 for _ in range(6)] for item in STEP0018_ITEM_NAMES}
+    for iBreed in range(6):
+        iStart = 2 + iBreed * len(arrSourceItems)
+        for pszSourceItem, pszTargetItem in dicSourceTarget.items():
+            arrSource = arrRows[iStart + dicSourceItem[pszSourceItem]]
+            for iMonth in arrMonths:
+                objValue = parse_step0018_number(
+                    arrSource[iMonth + 1], pszTargetItem,
+                    f"{pszPath}: {iBreed + 1}区分 {iMonth}月 {pszSourceItem}", False,
+                )
+                if objValue is None:
+                    raise_conversion_error(
+                        "STEP0018_PROCESSING_ACTUAL_VALUE_MISSING",
+                        f"{iBreed + 1}区分 {iMonth}月 {pszSourceItem}",
+                    )
+                dicActual[pszTargetItem][iBreed][iMonth - 1] = objValue
+        for pszItem in STEP0018_ITEM_NAMES[:3]:
+            dicActual[pszItem][iBreed][12] = sum(
+                (dicActual[pszItem][iBreed][m - 1] for m in arrMonths), Decimal("0")
+            )
+        dicActual["育成率"][iBreed][12] = step0018_ratio(
+            dicActual["出荷羽数"][iBreed][12], dicActual["入雛羽数"][iBreed][12]
+        )
+        dicActual["平均体重"][iBreed][12] = step0018_ratio(
+            dicActual["正味重量"][iBreed][12], dicActual["出荷羽数"][iBreed][12]
+        )
+        for iMonth in arrMonths:
+            dicActual["育成率"][iBreed][iMonth - 1] = step0018_ratio(
+                dicActual["出荷羽数"][iBreed][iMonth - 1],
+                dicActual["入雛羽数"][iBreed][iMonth - 1],
+            )
+            dicActual["平均体重"][iBreed][iMonth - 1] = step0018_ratio(
+                dicActual["正味重量"][iBreed][iMonth - 1],
+                dicActual["出荷羽数"][iBreed][iMonth - 1],
+            )
+    return pszPath, dicActual, arrMonths
+
+
+def create_step0018_processing_file(
+    pszPlanPath: str, objPlan: Tuple[int, Dict[str, List[List[Optional[Decimal]]]], List[str]],
+    arrActualPaths: List[str], arrYearMonths: List[Tuple[int, int]],
+) -> str:
+    iYear, dicPlanSource, arrPlanWarnings = objPlan
+    pszActualPath, dicActual, arrMonths = read_step0018_processing_actuals(
+        arrActualPaths, iYear, arrYearMonths
+    )
+    # 既存の計画表から、出荷計画・重量計画を処理実績との比較値にします。
+    dicPlan = {"入雛羽数": dicPlanSource["入雛羽数"],
+               "出荷羽数": dicPlanSource["出荷羽数"],
+               "正味重量": dicPlanSource["正味重量"],
+               "育成率": dicPlanSource["育成率"],
+               "平均体重": dicPlanSource["平均体重"]}
+    arrRows = create_step0018_rows(iYear, dicPlan, dicActual, arrMonths, arrPlanWarnings)
+    arrRows[0][0] = f"{iYear}年生鳥 処理 計画・実績対比表"
+    # Only the section label changes; existing metric calculations and formats are reused.
+    for arrRow in arrRows:
+        if arrRow[0] == "出荷羽数":
+            arrRow[0] = "処理羽数"
+    objMatch = re.fullmatch(
+        r"(.+)_step0013_品種別_控除廃棄_[0-9]{4}_年間(?:_[0-9]+)?\.tsv",
+        os.path.basename(pszActualPath),
+    )
+    pszStem = f"{objMatch.group(1)}_step0018_品種別_処理_計画実績対比_{iYear:04d}_年間"
+    pszDirectory = os.path.dirname(pszActualPath)
+    pszOutputPath = os.path.join(pszDirectory, pszStem + ".tsv")
+    iSuffix = 2
+    while True:
+        try:
+            iDescriptor = os.open(pszOutputPath, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(iDescriptor)
+            break
+        except FileExistsError:
+            pszOutputPath = os.path.join(pszDirectory, f"{pszStem}_{iSuffix:02d}.tsv")
+            iSuffix += 1
+    pszTemporaryPath = ""
+    bCompleted = False
+    try:
+        iDescriptor, pszTemporaryPath = tempfile.mkstemp(
+            prefix="group_shipment_step0018_processing_", suffix=".tsv", dir=pszDirectory
+        )
+        os.close(iDescriptor)
+        with open(pszTemporaryPath, "w", encoding="utf-8-sig", newline="") as objFile:
+            for arrRow in arrRows:
+                objFile.write("\t".join(arrRow) + "\r\n")
+        os.replace(pszTemporaryPath, pszOutputPath)
+        pszTemporaryPath = ""
+        bCompleted = True
+    finally:
+        if pszTemporaryPath and os.path.exists(pszTemporaryPath):
+            os.remove(pszTemporaryPath)
+        if not bCompleted and os.path.exists(pszOutputPath):
+            os.remove(pszOutputPath)
+    pszExcelPath = create_step0018_excel_file(pszOutputPath)
+    pszNamedExcelPath = create_step0018_named_excel_copy(pszExcelPath)
+    apply_step0018_reference_formatting(pszNamedExcelPath)
+    print("step0018処理計画Excel: " + pszPlanPath)
+    print("step0018処理実績TSV: " + pszActualPath)
+    print("step0018処理実績基準: 控除廃棄、重量kg、処理羽数・処理重量から率・体重を再計算")
+    for pszWarning in arrPlanWarnings:
+        print("step0018処理警告: " + pszWarning)
+    print("step0018処理計画実績対比ファイル: " + pszOutputPath)
+    print("step0018処理計画実績対比Excel: " + pszExcelPath)
+    print("step0018処理品種別計画実績対比Excel: " + pszNamedExcelPath)
+    return pszOutputPath
+
+
+def create_step0018_processing_files(
+    pszInputExcelPath: str, arrActualPaths: List[str],
+    arrYearMonths: List[Tuple[int, int]],
+) -> List[str]:
+    """控除廃棄実績を用いる追加版を独立して作成します。"""
+    pszDirectory = os.path.dirname(os.path.abspath(pszInputExcelPath))
+    dicActualByYear: Dict[int, List[str]] = {}
+    for pszPath in arrActualPaths:
+        objMatch = re.fullmatch(
+            r".+_step0013_品種別_控除廃棄_([0-9]{4})_年間(?:_[0-9]+)?\.tsv",
+            os.path.basename(pszPath),
+        )
+        if objMatch:
+            dicActualByYear.setdefault(int(objMatch.group(1)), []).append(pszPath)
+    dicPlanFiles: Dict[int, List[Tuple[str, bool]]] = {}
+    for pszName in os.listdir(pszDirectory):
+        objMatch = re.fullmatch(r"計画_([0-9]{4})年(.*)\.xlsx", pszName)
+        if objMatch:
+            dicPlanFiles.setdefault(int(objMatch.group(1)), []).append(
+                (os.path.join(pszDirectory, pszName), objMatch.group(2) == "")
+            )
+    arrCreatedPaths: List[str] = []
+    arrWarnings: List[str] = []
+    for iYear in sorted({year for year, _ in arrYearMonths} | set(dicPlanFiles)):
+        arrPlans = dicPlanFiles.get(iYear, [])
+        arrActuals = dicActualByYear.get(iYear, [])
+        if len(arrPlans) != 1 or not arrPlans[0][1]:
+            arrWarnings.append(f"{iYear}年: 正式名の計画Excelが一意にないため処理版step0018を作成しません。")
+            continue
+        if len(arrActuals) != 1:
+            arrWarnings.append(f"{iYear}年: 控除廃棄版step0013実績TSVが一意にないため処理版step0018を作成しません。")
+            continue
+        try:
+            objPlan = read_step0018_plan_excel(arrPlans[0][0])
+            if objPlan[0] != iYear:
+                raise_conversion_error(
+                    "STEP0018_PROCESSING_PLAN_YEAR_MISMATCH",
+                    f"計画ファイル名の年 {iYear} と表題の年 {objPlan[0]} が一致しません。",
+                )
+            arrCreatedPaths.append(create_step0018_processing_file(
+                arrPlans[0][0], objPlan, arrActuals, arrYearMonths
+            ))
+        except Exception as objException:
+            pszCode = getattr(objException, "pszErrorCode", "UNEXPECTED_ERROR")
+            arrWarnings.append(f"{iYear}年: 処理版step0018を作成できません ({pszCode}): {objException}")
+    if arrWarnings:
+        pszWarningPath = write_step0018_warning_file(pszInputExcelPath, arrWarnings)
+        for pszWarning in arrWarnings:
+            print("step0018処理警告: " + pszWarning)
+        print("step0018処理警告ファイル: " + pszWarningPath)
+    if not arrCreatedPaths:
+        print("step0018処理計画実績対比ファイル: 0件")
     return arrCreatedPaths
 
 
@@ -19855,6 +20044,18 @@ def main() -> int:
             arrStep0013VarietyPaths,
             arrStep0003VarietyYearMonths,
         )
+        try:
+            create_step0018_processing_files(
+                pszInputExcelPath,
+                arrStep0013VarietyDeductionPaths,
+                arrStep0003VarietyYearMonths,
+            )
+        except Exception as objProcessingException:
+            # 処理版の失敗で、既存の出荷ベース出力や元TSVを失敗扱いにしません。
+            print(
+                "step0018処理警告: 処理版の追加作成に失敗しました: "
+                + str(objProcessingException)
+            )
     except Exception as objException:
         pszErrorCode: str = getattr(
             objException, "pszErrorCode", "UNEXPECTED_CONVERSION_ERROR"

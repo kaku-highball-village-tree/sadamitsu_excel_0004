@@ -389,7 +389,12 @@ def run_excel_to_tsv(pszInputExcelPath: str) -> None:
         pszMessage += "\n\nstep0018警告ファイル:\n" + pszStep0018WarningPath
     arrPlanDetails = [line for line in pszStdOut.splitlines() if line.startswith("step0018")]
     if arrPlanDetails:
-        pszMessage += "\n\n計画・実績対比（廃棄控除前）:\n" + "\n".join(arrPlanDetails)
+        arrProcessingPlanDetails = [line for line in arrPlanDetails if line.startswith("step0018処理")]
+        arrShipmentPlanDetails = [line for line in arrPlanDetails if not line.startswith("step0018処理")]
+        if arrShipmentPlanDetails:
+            pszMessage += "\n\n計画・実績対比（廃棄控除前）:\n" + "\n".join(arrShipmentPlanDetails)
+        if arrProcessingPlanDetails:
+            pszMessage += "\n\n計画・実績対比（処理ベース）:\n" + "\n".join(arrProcessingPlanDetails)
     show_completion_dialog(os.path.dirname(pszOutputTsvPath), bHasWarning, pszMessage)
 
 
